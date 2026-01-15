@@ -4,15 +4,15 @@ import logging
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
-from backend.models import (
+from models import (
     ApprovalRequest,
     HealthResponse,
     SessionInfo,
     SessionResponse,
     SubmitRequest,
 )
-from backend.session_manager import session_manager
-from backend.websocket import manager as ws_manager
+from session_manager import session_manager
+from websocket import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 

@@ -9,8 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.routes.agent import router as agent_router
-from backend.routes.auth import router as auth_router
+from routes.agent import router as agent_router
+from routes.auth import router as auth_router
 
 # Configure logging
 logging.basicConfig(

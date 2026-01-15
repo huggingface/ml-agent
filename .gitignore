@@ -18,3 +18,9 @@ hf-agent-leaderboard/
 .cursor/
 session_logs/
 skills/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+frontend/*.local

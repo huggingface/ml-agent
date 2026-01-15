@@ -11,7 +11,7 @@ from agent.config import load_config
 from agent.core.agent_loop import process_submission
 from agent.core.session import Event, Operation, OpType, Session, Submission
 from agent.core.tools import ToolRouter
-from backend.websocket import manager as ws_manager
+from websocket import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 
