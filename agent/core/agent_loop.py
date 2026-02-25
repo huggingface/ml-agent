@@ -38,7 +38,9 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def _needs_approval(tool_name: str, tool_args: dict, config: Config | None = None) -> bool:
+def _needs_approval(
+    tool_name: str, tool_args: dict, config: Config | None = None
+) -> bool:
     """Check if a tool call requires user approval before execution."""
     # Yolo mode: skip all approvals
     if config and config.yolo_mode:
@@ -49,28 +51,31 @@ def _needs_approval(tool_name: str, tool_args: dict, config: Config | None = Non
     if not args_valid:
         return False
 
-    # Sandbox tools: only sandbox_create requires approval
-    SANDBOX_TOOLS = {"sandbox_create", "bash", "read", "write", "edit", "glob", "grep"}
-    if tool_name in SANDBOX_TOOLS:
-        return tool_name == "sandbox_create"
+    if tool_name == "sandbox_create":
+        return True
 
     if tool_name == "hf_jobs":
         operation = tool_args.get("operation", "")
         if operation not in ["run", "uv", "scheduled run", "scheduled uv"]:
             return False
-        
+
         # Check if this is a CPU-only job
         # hardware_flavor is at top level of tool_args, not nested in args
-        hardware_flavor = tool_args.get("hardware_flavor") or tool_args.get("flavor") or tool_args.get("hardware") or "cpu-basic"
+        hardware_flavor = (
+            tool_args.get("hardware_flavor")
+            or tool_args.get("flavor")
+            or tool_args.get("hardware")
+            or "cpu-basic"
+        )
         is_cpu_job = hardware_flavor in CPU_FLAVORS
-        
+
         if is_cpu_job:
             if config and not config.confirm_cpu_jobs:
                 return False
             return True
-        
+
         return True
-    
+
     # Check for file upload operations (hf_private_repos or other tools)
     if tool_name == "hf_private_repos":
         operation = tool_args.get("operation", "")
@@ -91,7 +96,13 @@ def _needs_approval(tool_name: str, tool_args: dict, config: Config | None = Non
     # hf_repo_git: destructive operations require approval
     if tool_name == "hf_repo_git":
         operation = tool_args.get("operation", "")
-        if operation in ["delete_branch", "delete_tag", "merge_pr", "create_repo", "update_repo"]:
+        if operation in [
+            "delete_branch",
+            "delete_tag",
+            "merge_pr",
+            "create_repo",
+            "update_repo",
+        ]:
             return True
 
     return False

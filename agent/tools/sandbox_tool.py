@@ -1,9 +1,9 @@
 """
 Sandbox tools — expose the Sandbox client as agent tools.
 
-7 tools total:
+5 tools total:
   sandbox_create — explicit sandbox creation (requires approval)
-  bash, read, write, edit, glob, grep — operations on the sandbox
+  bash, read, write, edit — operations on the sandbox
 
 If any operation tool is called without an active sandbox,
 a cpu-basic sandbox is auto-created (no approval needed).
@@ -78,12 +78,14 @@ SANDBOX_CREATE_TOOL_SPEC = {
     "name": "sandbox_create",
     "description": (
         "Create a persistent remote Linux sandbox on HF Spaces for interactive development.\n"
-        "YOU MUST DO THIS BEFORE USING bash/read/write/edit/glob/grep tools.\n"
+        "YOU MUST DO THIS BEFORE USING bash/read/write/edit tools.\n"
         "\n"
-        "Spins up a new sandbox environment where you can run commands, read/write/edit files, "
-        "install packages, and debug iteratively. The sandbox persists across tool calls within "
-        "the session.\n"
-        "You can choose from the following hardware tiers: " + ", ".join([e.value for e in SpaceHardware]) + ".\n"
+        "Spins up a new sandbox with a given hardware tier where you can run commands, read/write/edit files, "
+        "install packages, and debug iteratively. The sandbox persists across tool calls within the session."
+        "\n"
+        "You can choose from the following hardware tiers (GPU is required for model development or other tasks that benefit from and utilize the GPU): "
+        + ", ".join([e.value for e in SpaceHardware])
+        + ".\n"
         "Use sandbox for: iterative development, debugging, multi-step workflows, testing code.\n"
         "Use hf_jobs instead for: one-shot batch runs, scheduled tasks, fire-and-forget training.\n"
     ),
@@ -101,10 +103,6 @@ SANDBOX_CREATE_TOOL_SPEC = {
                 "type": "boolean",
                 "description": "If true, create a private Space",
             },
-            "sleep_time": {
-                "type": "integer",
-                "description": "Auto-sleep after N seconds of inactivity",
-            },
         },
     },
 }
@@ -120,15 +118,13 @@ async def sandbox_create_handler(
         return (
             f"Sandbox already active: {sb.space_id}\n"
             f"URL: {sb.url}\n"
-            f"Use bash/read/write/edit/glob/grep to interact with it."
+            f"Use bash/read/write/edit to interact with it."
         ), True
 
     hardware = args.get("hardware", "cpu-basic")
     create_kwargs = {}
     if "private" in args:
         create_kwargs["private"] = args["private"]
-    if "sleep_time" in args:
-        create_kwargs["sleep_time"] = args["sleep_time"]
 
     try:
         sb, error = await _ensure_sandbox(session, hardware=hardware, **create_kwargs)
@@ -142,7 +138,7 @@ async def sandbox_create_handler(
         f"Sandbox created: {sb.space_id}\n"
         f"URL: {sb.url}\n"
         f"Hardware: {hardware}\n"
-        f"Use bash/read/write/edit/glob/grep to interact with it."
+        f"Use bash/read/write/edit to interact with it."
     ), True
 
 
@@ -176,7 +172,7 @@ def _make_tool_handler(sandbox_tool_name: str):
 
 
 def get_sandbox_tools():
-    """Return all 7 sandbox ToolSpecs (sandbox_create + 6 operation tools)."""
+    """Return all 5 sandbox ToolSpecs (sandbox_create + 4 operation tools)."""
     from agent.core.tools import ToolSpec
 
     tools = []

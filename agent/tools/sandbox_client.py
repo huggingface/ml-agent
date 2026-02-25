@@ -31,7 +31,7 @@ Lifecycle:
         sb.bash("python train.py")
     # Space deleted on exit
 
-Tools: bash, read, write, edit, glob, grep, upload
+Tools: bash, read, write, edit, upload
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -74,17 +73,17 @@ RUN apt-get update && \\
     apt-get install -y \\
       bash git git-lfs wget curl procps \\
       htop vim nano jq tmux \\
-      build-essential grep && \\
+      build-essential && \\
     rm -rf /var/lib/apt/lists/*
 
-# Install server dependencies (as root, before USER switch)
 RUN uv pip install --system fastapi uvicorn python-multipart
 
 RUN useradd -m -u 1000 user
 USER user
 
 ENV HOME=/home/user \\
-    PATH=/home/user/.local/bin:$PATH
+    PATH=/home/user/.local/bin:$PATH \\
+    PIP_USER=1
 
 WORKDIR /app
 COPY --chown=user . /app
@@ -93,6 +92,114 @@ EXPOSE 7860
 
 CMD ["python", "sandbox_server.py"]
 """
+
+_SANDBOX_SERVER = '''\
+"""Minimal FastAPI server for sandbox operations."""
+import os, subprocess, pathlib
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import Optional
+import uvicorn
+
+app = FastAPI()
+
+class BashReq(BaseModel):
+    command: str
+    work_dir: str = "/app"
+    timeout: int = 120
+
+class ReadReq(BaseModel):
+    path: str
+    offset: Optional[int] = None
+    limit: Optional[int] = 2000
+
+class WriteReq(BaseModel):
+    path: str
+    content: str
+
+class EditReq(BaseModel):
+    path: str
+    old_str: str
+    new_str: str
+    replace_all: bool = False
+
+class ExistsReq(BaseModel):
+    path: str
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/api/bash")
+def bash(req: BashReq):
+    try:
+        r = subprocess.run(
+            req.command, shell=True, capture_output=True, text=True,
+            cwd=req.work_dir, timeout=req.timeout,
+        )
+        output = r.stdout + r.stderr
+        if len(output) > 30000:
+            output = output[:30000] + "\\n... (truncated)"
+        return {"success": r.returncode == 0, "output": output, "error": "" if r.returncode == 0 else f"Exit code {r.returncode}"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "output": "", "error": f"Timeout after {req.timeout}s"}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+@app.post("/api/read")
+def read(req: ReadReq):
+    try:
+        p = pathlib.Path(req.path)
+        if not p.exists():
+            return {"success": False, "output": "", "error": f"File not found: {req.path}"}
+        if p.is_dir():
+            return {"success": False, "output": "", "error": f"Is a directory: {req.path}"}
+        lines = p.read_text().splitlines()
+        start = (req.offset or 1) - 1
+        end = start + (req.limit or len(lines))
+        selected = lines[start:end]
+        numbered = "\\n".join(f"{start + i + 1}\\t{line}" for i, line in enumerate(selected))
+        return {"success": True, "output": numbered, "error": ""}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+@app.post("/api/write")
+def write(req: WriteReq):
+    try:
+        p = pathlib.Path(req.path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(req.content)
+        return {"success": True, "output": f"Wrote {len(req.content)} bytes to {req.path}", "error": ""}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+@app.post("/api/edit")
+def edit(req: EditReq):
+    try:
+        p = pathlib.Path(req.path)
+        if not p.exists():
+            return {"success": False, "output": "", "error": f"File not found: {req.path}"}
+        content = p.read_text()
+        if req.old_str not in content:
+            return {"success": False, "output": "", "error": f"old_str not found in {req.path}"}
+        if not req.replace_all and content.count(req.old_str) > 1:
+            return {"success": False, "output": "", "error": f"old_str appears {content.count(req.old_str)} times. Use replace_all=true or provide more context."}
+        if req.replace_all:
+            new_content = content.replace(req.old_str, req.new_str)
+        else:
+            new_content = content.replace(req.old_str, req.new_str, 1)
+        p.write_text(new_content)
+        return {"success": True, "output": f"Edited {req.path}", "error": ""}
+    except Exception as e:
+        return {"success": False, "output": "", "error": str(e)}
+
+@app.post("/api/exists")
+def exists(req: ExistsReq):
+    return {"success": True, "output": str(pathlib.Path(req.path).exists()).lower(), "error": ""}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=7860)
+'''
 
 
 @dataclass
@@ -235,10 +342,7 @@ class Sandbox:
 
     @staticmethod
     def _setup_server(space_id: str, api: HfApi) -> None:
-        """Upload FastAPI server + Dockerfile to the sandbox Space (single commit)."""
-        server_path = Path(__file__).parent / "example_sandbox_server.py"
-        server_code = server_path.read_text()
-
+        """Upload embedded sandbox server + Dockerfile to the Space (single commit)."""
         print(f"Uploading sandbox server to {space_id}...")
         api.create_commit(
             repo_id=space_id,
@@ -246,7 +350,7 @@ class Sandbox:
             operations=[
                 CommitOperationAdd(
                     path_in_repo="sandbox_server.py",
-                    path_or_fileobj=io.BytesIO(server_code.encode()),
+                    path_or_fileobj=io.BytesIO(_SANDBOX_SERVER.encode()),
                 ),
                 CommitOperationAdd(
                     path_in_repo="Dockerfile",
@@ -435,45 +539,6 @@ class Sandbox:
             },
         )
 
-    def glob(self, pattern: str, *, path: str | None = None) -> ToolResult:
-        return self._call(
-            "glob",
-            {
-                "pattern": pattern,
-                "path": path or self.work_dir,
-            },
-        )
-
-    def grep(
-        self,
-        pattern: str,
-        *,
-        path: str | None = None,
-        include: str | None = None,
-        output_mode: str = "files_with_matches",
-        case_insensitive: bool = False,
-        n: bool = False,
-        A: int | None = None,
-        B: int | None = None,
-        C: int | None = None,
-        head_limit: int | None = None,
-    ) -> ToolResult:
-        return self._call(
-            "grep",
-            {
-                "pattern": pattern,
-                "path": path or self.work_dir,
-                "include": include,
-                "output_mode": output_mode,
-                "case_insensitive": case_insensitive,
-                "n": n,
-                "A": A,
-                "B": B,
-                "C": C,
-                "head_limit": head_limit,
-            },
-        )
-
     # ── Tool schemas & dispatch ───────────────────────────────────
 
     TOOLS = {
@@ -486,8 +551,6 @@ class Sandbox:
                 "\n"
                 "AVOID using bash for operations covered by specialized tools:\n"
                 "- File reading: use read (not cat/head/tail)\n"
-                "- File search: use grep (not grep/rg)\n"
-                "- File finding: use glob (not find)\n"
                 "- File editing: use edit (not sed/awk)\n"
                 "- File writing: use write (not echo/cat <<EOF)\n"
                 "\n"
@@ -614,86 +677,6 @@ class Sandbox:
                 },
             },
         },
-        "glob": {
-            "description": (
-                "Find files by glob pattern, sorted by modification time (newest first).\n"
-                "\n"
-                "Patterns: * (any), ** (recursive), ? (one char), {a,b}, [abc], [!abc].\n"
-                "Examples: '*.py', '*.{json,yaml}', 'test_*'"
-            ),
-            "parameters": {
-                "type": "object",
-                "required": ["pattern"],
-                "additionalProperties": False,
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Glob pattern to match file names.",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search (default: /app). Omit for default.",
-                    },
-                },
-            },
-        },
-        "grep": {
-            "description": (
-                "Search file contents. ALWAYS use this — NEVER bash with grep.\n"
-                "\n"
-                "Output modes:\n"
-                "- 'files_with_matches' (default): file paths only\n"
-                "- 'content': matching lines (supports -n, -A/-B/-C context)\n"
-                "- 'count': match counts per file\n"
-                "\n"
-                "Supports regex. Use glob for name matching, grep for content."
-            ),
-            "parameters": {
-                "type": "object",
-                "required": ["pattern"],
-                "additionalProperties": False,
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Search string or regex.",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search (default: /app).",
-                    },
-                    "include": {
-                        "type": "string",
-                        "description": "Glob filter (e.g. '*.py').",
-                    },
-                    "output_mode": {
-                        "type": "string",
-                        "enum": ["content", "files_with_matches", "count"],
-                        "description": "Default: 'files_with_matches'.",
-                    },
-                    "-i": {"type": "boolean", "description": "Case-insensitive."},
-                    "-n": {
-                        "type": "boolean",
-                        "description": "Line numbers (content mode only).",
-                    },
-                    "-A": {
-                        "type": "integer",
-                        "description": "Lines after match (content mode only).",
-                    },
-                    "-B": {
-                        "type": "integer",
-                        "description": "Lines before match (content mode only).",
-                    },
-                    "-C": {
-                        "type": "integer",
-                        "description": "Lines around match (content mode only).",
-                    },
-                    "head_limit": {
-                        "type": "integer",
-                        "description": "Limit output entries.",
-                    },
-                },
-            },
-        },
     }
 
     @classmethod
@@ -719,19 +702,6 @@ class Sandbox:
                 a["old_str"],
                 a["new_str"],
                 replace_all=a.get("replace_all", False),
-            ),
-            "glob": lambda a: self.glob(a["pattern"], path=a.get("path")),
-            "grep": lambda a: self.grep(
-                a["pattern"],
-                path=a.get("path"),
-                include=a.get("include"),
-                output_mode=a.get("output_mode", "files_with_matches"),
-                case_insensitive=a.get("-i", False),
-                n=a.get("-n", False),
-                A=a.get("-A"),
-                B=a.get("-B"),
-                C=a.get("-C"),
-                head_limit=a.get("head_limit"),
             ),
         }
         fn = dispatch.get(name)
