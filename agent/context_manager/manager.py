@@ -78,7 +78,9 @@ class ContextManager:
         """Get all messages for sending to LLM"""
         return self.items
 
-    async def compact(self, model_name: str) -> None:
+    async def compact(
+        self, model_name: str, tool_specs: list[dict] | None = None
+    ) -> None:
         """Remove old messages to keep history under target size"""
         if (self.context_length <= self.max_context) or not self.items:
             return
@@ -112,6 +114,7 @@ class ContextManager:
             model=model_name,
             messages=messages_to_summarize,
             max_completion_tokens=self.compact_size,
+            tools=tool_specs,
         )
         summarized_message = Message(
             role="assistant", content=response.choices[0].message.content

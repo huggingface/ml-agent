@@ -6,6 +6,7 @@ import asyncio
 import json
 
 from litellm import ChatCompletionMessageToolCall, Message, ModelResponse, acompletion
+from litellm.exceptions import ContextWindowExceededError
 from lmnr import observe
 
 from agent.config import Config
@@ -108,13 +109,31 @@ def _needs_approval(
     return False
 
 
+async def _compact_and_notify(session: Session) -> None:
+    """Run compaction and send event if context was reduced."""
+    old_length = session.context_manager.context_length
+    tool_specs = session.tool_router.get_tool_specs_for_llm()
+    await session.context_manager.compact(
+        model_name=session.config.model_name,
+        tool_specs=tool_specs,
+    )
+    new_length = session.context_manager.context_length
+    if new_length != old_length:
+        await session.send_event(
+            Event(
+                event_type="compacted",
+                data={"old_tokens": old_length, "new_tokens": new_length},
+            )
+        )
+
+
 class Handlers:
     """Handler functions for each operation type"""
 
     @staticmethod
     @observe(name="run_agent")
     async def run_agent(
-        session: Session, text: str, max_iterations: int = 10
+        session: Session, text: str, max_iterations: int = 300
     ) -> str | None:
         """
         Handle user input (like user_input_or_turn in codex.rs:1291)
@@ -141,6 +160,9 @@ class Handlers:
         final_response = None
 
         while iteration < max_iterations:
+            # Compact before calling the LLM if context is near the limit
+            await _compact_and_notify(session)
+
             messages = session.context_manager.get_messages()
             tools = session.tool_router.get_tool_specs_for_llm()
 
@@ -277,6 +299,14 @@ class Handlers:
 
                 iteration += 1
 
+            except ContextWindowExceededError:
+                # Force compact and retry this iteration
+                session.context_manager.context_length = (
+                    session.context_manager.max_context + 1
+                )
+                await _compact_and_notify(session)
+                continue
+
             except Exception as e:
                 import traceback
 
@@ -287,18 +317,6 @@ class Handlers:
                     )
                 )
                 break
-
-        old_length = session.context_manager.context_length
-        await session.context_manager.compact(model_name=session.config.model_name)
-        new_length = session.context_manager.context_length
-
-        if new_length != old_length:
-            await session.send_event(
-                Event(
-                    event_type="compacted",
-                    data={"old_tokens": old_length, "new_tokens": new_length},
-                )
-            )
 
         await session.send_event(
             Event(
@@ -318,20 +336,6 @@ class Handlers:
         """Handle interrupt (like interrupt in codex.rs:1266)"""
         session.interrupt()
         await session.send_event(Event(event_type="interrupted"))
-
-    @staticmethod
-    async def compact(session: Session) -> None:
-        """Handle compact (like compact in codex.rs:1317)"""
-        old_length = session.context_manager.context_length
-        await session.context_manager.compact(model_name=session.config.model_name)
-        new_length = session.context_manager.context_length
-
-        await session.send_event(
-            Event(
-                event_type="compacted",
-                data={"removed": old_length, "remaining": new_length},
-            )
-        )
 
     @staticmethod
     async def undo(session: Session) -> None:
@@ -505,7 +509,8 @@ async def process_submission(session: Session, submission) -> bool:
         return True
 
     if op.op_type == OpType.COMPACT:
-        await Handlers.compact(session)
+        # compact from the frontend
+        await _compact_and_notify(session)
         return True
 
     if op.op_type == OpType.UNDO:
