@@ -405,10 +405,10 @@ def find_examples(
 GITHUB_FIND_EXAMPLES_TOOL_SPEC = {
     "name": "github_find_examples",
     "description": (
-        "Find working example scripts in GitHub repositories (examples/, scripts/, tutorials/ directories). "
+        "Find working example scripts in GitHub repositories (from a list of predetermined directories e.g. examples/, scripts/, tutorials/, etc.). "
         "Uses fuzzy keyword matching.\n\n"
         "MANDATORY before writing any ML training, fine-tuning, or inference code. "
-        "Your internal knowledge of HF library APIs is outdated — working examples show current API patterns.\n\n"
+        "Your internal knowledge of library APIs is outdated — working examples show current API patterns.\n\n"
         "Sequence: github_find_examples → github_read_file (study the example) → implement based on what you found.\n\n"
         "Skip this only for: simple data queries, status checks, non-code tasks.\n\n"
         "Examples:\n"

@@ -9,7 +9,7 @@ import base64
 import http.client
 import os
 import re
-from typing import Any, Dict, Literal, Optional, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 import httpx
 from huggingface_hub import HfApi
@@ -25,38 +25,33 @@ from agent.tools.utilities import (
 )
 
 # Hardware flavors
-CPU_FLAVORS = ["cpu-basic", "cpu-upgrade", "cpu-performance", "cpu-xl"]
+CPU_FLAVORS = ["cpu-basic", "cpu-upgrade"]
 GPU_FLAVORS = [
-    "sprx8",
-    "zero-a10g",
     "t4-small",
     "t4-medium",
-    "l4x1",
-    "l4x4",
-    "l40sx1",
-    "l40sx4",
-    "l40sx8",
     "a10g-small",
     "a10g-large",
     "a10g-largex2",
     "a10g-largex4",
     "a100-large",
-    "h100",
-    "h100x8",
+    "a100x4",
+    "a100x8",
+    "l4x1",
+    "l4x4",
+    "l40sx1",
+    "l40sx4",
+    "l40sx8",
 ]
 
 # Detailed specs for display (vCPU/RAM/GPU VRAM)
-CPU_FLAVORS_DESC = (
-    "cpu-basic(2vCPU/16GB), cpu-upgrade(8vCPU/32GB), cpu-performance, cpu-xl"
-)
+CPU_FLAVORS_DESC = "cpu-basic(2vCPU/16GB), cpu-upgrade(8vCPU/32GB)"
 GPU_FLAVORS_DESC = (
     "t4-small(4vCPU/15GB/GPU 16GB), t4-medium(8vCPU/30GB/GPU 16GB), "
-    "l4x1(8vCPU/30GB/GPU 24GB), l4x4(48vCPU/186GB/GPU 96GB), "
-    "l40sx1(8vCPU/62GB/GPU 48GB), l40sx4(48vCPU/382GB/GPU 192GB), l40sx8(192vCPU/1534GB/GPU 384GB), "
-    "a10g-small(4vCPU/14GB/GPU 24GB), a10g-large(12vCPU/46GB/GPU 24GB), "
+    "a10g-small(4vCPU/15GB/GPU 24GB), a10g-large(12vCPU/46GB/GPU 24GB), "
     "a10g-largex2(24vCPU/92GB/GPU 48GB), a10g-largex4(48vCPU/184GB/GPU 96GB), "
-    "a100-large(12vCPU/142GB/GPU 80GB), h100(23vCPU/240GB/GPU 80GB), h100x8(184vCPU/1920GB/GPU 640GB), "
-    "zero-a10g(dynamic alloc)"
+    "a100-large(12vCPU/142GB/GPU 80GB), a100x4(48vCPU/568GB/GPU 320GB), a100x8(96vCPU/1136GB/GPU 640GB), "
+    "l4x1(8vCPU/30GB/GPU 24GB), l4x4(48vCPU/186GB/GPU 96GB), "
+    "l40sx1(8vCPU/62GB/GPU 48GB), l40sx4(48vCPU/382GB/GPU 192GB), l40sx8(192vCPU/1534GB/GPU 384GB)"
 )
 SPECIALIZED_FLAVORS = ["inf2x6"]
 ALL_FLAVORS = CPU_FLAVORS + GPU_FLAVORS + SPECIALIZED_FLAVORS
@@ -389,7 +384,9 @@ class HfJobsTool:
                 def log_producer():
                     try:
                         # fetch_job_logs is a blocking sync generator
-                        logs_gen = self.api.fetch_job_logs(job_id=job_id, namespace=namespace)
+                        logs_gen = self.api.fetch_job_logs(
+                            job_id=job_id, namespace=namespace
+                        )
                         for line in logs_gen:
                             # Push line to queue thread-safely
                             loop.call_soon_threadsafe(queue.put_nowait, line)
@@ -907,16 +904,14 @@ HF_JOBS_TOOL_SPEC = {
         "Common picks: t4-small ($0.60/hr, 1-3B), a10g-large ($2/hr, 7-13B), a100-large ($4/hr, 30B+), h100 ($6/hr, 70B+). "
         "Note: a10g-small and a10g-large have the SAME 24GB GPU — the difference is CPU/RAM only.\n\n"
         "OOM RECOVERY: When a training job fails with CUDA OOM:\n"
-        "1. Reduce per_device_train_batch_size and increase gradient_accumulation_steps proportionally (keeps effective batch size identical)\n"
+        "1. Reduce per_device_train_batch_size and increase gradient_accumulation_steps proportionally (keep effective batch size identical)\n"
         "2. Enable gradient_checkpointing=True\n"
         "3. Upgrade to larger GPU (a10g→a100→h100)\n"
         "Do NOT switch training methods (e.g. full SFT to LoRA) or reduce max_length — those change what the user gets and require explicit approval.\n\n"
-        "After submission: return immediately with job ID, monitoring URL, expected duration and cost. "
-        "Do not poll logs unless the user asks.\n\n"
         "Examples:\n"
-        "Training: {'operation': 'run', 'script': '/app/train.py', 'dependencies': ['transformers', 'trl', 'torch', 'datasets', 'trackio'], 'hardware_flavor': 'a10g-large', 'timeout': '4h'}\n"
-        "Data processing: {'operation': 'run', 'script': '<inline>', 'dependencies': ['datasets'], 'hardware_flavor': 'cpu-upgrade', 'timeout': '2h'}\n"
+        "Training: {'operation': 'run', 'script': '/app/train.py', 'dependencies': ['transformers', 'trl', 'torch', 'datasets', 'trackio'], 'hardware_flavor': 'a100-large', 'timeout': '8h'}\n"
         "Monitor: {'operation': 'ps'}, {'operation': 'logs', 'job_id': 'xxx'}, {'operation': 'cancel', 'job_id': 'xxx'}"
+        "Docker: {'operation': 'run', 'command': ['duckdb', '-c', 'select 1 + 2'], 'image': 'duckdb/duckdb', 'hardware_flavor': 'cpu-basic', 'timeout': '1h'}\n"
     ),
     "parameters": {
         "type": "object",
@@ -1030,6 +1025,7 @@ async def hf_jobs_handler(
         )
         if is_path:
             import shlex
+
             result = await asyncio.to_thread(sandbox.bash, f"cat {shlex.quote(script)}")
             if not result.success:
                 return f"Failed to read {script} from sandbox: {result.error}", False

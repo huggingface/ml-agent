@@ -845,9 +845,9 @@ DOC_ENDPOINTS = [
 EXPLORE_HF_DOCS_TOOL_SPEC = {
     "name": "explore_hf_docs",
     "description": (
-        "Browse HF documentation structure — discover available pages with 200-char previews.\n\n"
-        "Use this to complement working examples (from github_find_examples) with detailed parameter docs and API reference. "
-        "Not a substitute for reading working code first.\n\n"
+        "Browse HF documentation structure — discover all available documentation with 200-char previews.\n\n"
+        "Use this to find relevant documentation and/or examples with detailed parameter docs and API reference. "
+        "To be used together with github_find_examples and github_read_file to find working examples and documentation.\n\n"
         "Pattern: explore_hf_docs (find relevant pages) → fetch_hf_docs (get full content).\n\n"
         "For training tasks: fetch the trainer config docs (SFTConfig, DPOConfig, GRPOConfig) to verify parameter names. "
         "Returns top 20 results by default; set max_results (max 50) to adjust."
@@ -924,8 +924,8 @@ HF_DOCS_FETCH_TOOL_SPEC = {
     "name": "fetch_hf_docs",
     "description": (
         "Fetch full markdown content of an HF documentation page. Use after explore_hf_docs.\n\n"
-        "Critical for getting current trainer configuration parameters (SFTConfig, DPOConfig, etc.) "
-        "before writing training scripts. Your internal knowledge of parameter names is outdated.\n\n"
+        "Critical for finding documentation e.g. current trainer configuration parameters (SFTConfig, DPOConfig, etc.) "
+        "Use for researching solutions and before writing training scripts. Your internal knowledge is outdated.\n\n"
         "Provide the full URL from explore_hf_docs results. The .md extension is added automatically."
     ),
     "parameters": {

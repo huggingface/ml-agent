@@ -393,8 +393,9 @@ HF_INSPECT_DATASET_TOOL_SPEC = {
         "  SFT: needs 'messages', 'text', or 'prompt'/'completion'\n"
         "  DPO: needs 'prompt', 'chosen', 'rejected'\n"
         "  GRPO: needs 'prompt'\n"
+        "All datasets used for training have to be in conversational ChatML format to be compatible with HF libraries.'\n"
         "Training will fail with KeyError if columns don't match.\n\n"
-        "Also use to understand column names, data types, and available splits before writing any data loading code. "
+        "Also use to get example datapoints, understand column names, data types, and available splits before writing any data loading code. "
         "Supports private/gated datasets when HF_TOKEN is set."
     ),
     "parameters": {
