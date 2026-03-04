@@ -66,6 +66,9 @@ export class WebSocketChatTransport implements ChatTransport<UIMessage> {
   private currentSessionId: string | null = null;
   private sideChannel: SideChannelCallbacks;
 
+  /** Background WebSockets kept alive so the backend agent keeps running. */
+  private backgroundSockets: Map<string, WebSocket> = new Map();
+
   private streamController: ReadableStreamDefaultController<UIMessageChunk> | null = null;
   private streamGeneration = 0;
   private abortedGeneration = 0;
@@ -130,9 +133,56 @@ export class WebSocketChatTransport implements ChatTransport<UIMessage> {
       clearTimeout(this.connectTimeout);
       this.connectTimeout = null;
     }
-    this.disconnectWebSocket();
+
+    // Move current WS to background instead of closing it
+    if (this.ws && this.currentSessionId && this.currentSessionId !== sessionId) {
+      const oldId = this.currentSessionId;
+      const oldWs = this.ws;
+      this.backgroundSockets.set(oldId, oldWs);
+      // Replace handler: background sockets only need ping/pong
+      oldWs.onmessage = (evt) => {
+        try {
+          const raw = JSON.parse(evt.data);
+          if (raw.type === 'pong') return;
+          // Silently discard — backend keeps running, we'll load results from localStorage
+        } catch { /* ignore */ }
+      };
+      oldWs.onclose = () => {
+        this.backgroundSockets.delete(oldId);
+      };
+      this.ws = null;
+      this.stopPing();
+    } else {
+      this.disconnectWebSocket();
+    }
+
     this.currentSessionId = sessionId;
     if (sessionId) {
+      // Promote background socket if one exists for this session
+      const bg = this.backgroundSockets.get(sessionId);
+      if (bg && (bg.readyState === WebSocket.OPEN || bg.readyState === WebSocket.CONNECTING)) {
+        this.backgroundSockets.delete(sessionId);
+        this.ws = bg;
+        // Restore full event handling
+        bg.onmessage = (evt) => {
+          try {
+            const raw = JSON.parse(evt.data);
+            if (raw.type === 'pong') return;
+            this.handleEvent(raw as AgentEvent);
+          } catch (e) {
+            logger.error('WS parse error:', e);
+          }
+        };
+        bg.onclose = (evt) => {
+          logger.log('WS closed', evt.code, evt.reason);
+          this.sideChannel.onConnectionChange(false);
+          this.stopPing();
+        };
+        this.sideChannel.onConnectionChange(true);
+        this.startPing();
+        return;
+      }
+
       this.retries = 0;
       this.reconnectDelay = WS_RECONNECT_DELAY;
       this.connectTimeout = setTimeout(() => {
@@ -171,6 +221,9 @@ export class WebSocketChatTransport implements ChatTransport<UIMessage> {
       document.removeEventListener('visibilitychange', this.boundVisibilityHandler);
       this.boundVisibilityHandler = null;
     }
+    // Close all background sockets
+    for (const ws of this.backgroundSockets.values()) ws.close();
+    this.backgroundSockets.clear();
     this.disconnectWebSocket();
     this.closeActiveStream();
   }

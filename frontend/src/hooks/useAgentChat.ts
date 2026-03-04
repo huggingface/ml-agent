@@ -8,6 +8,7 @@ import { useChat } from '@ai-sdk/react';
 import type { UIMessage } from 'ai';
 import { WebSocketChatTransport, type SideChannelCallbacks } from '@/lib/ws-chat-transport';
 import { loadMessages, saveMessages } from '@/lib/chat-message-store';
+import { llmMessagesToUIMessages } from '@/lib/convert-llm-messages';
 import { apiFetch } from '@/utils/api';
 import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
@@ -210,12 +211,6 @@ export function useAgentChat({ sessionId, onReady, onError, onSessionDead }: Use
     messages: initialMessages,
     transport: transportRef.current!,
     experimental_throttle: 80,
-    onFinish: ({ messages, isAbort, isError }) => {
-      if (isAbort || isError) return;
-      if (sessionId && messages.length > 0) {
-        saveMessages(sessionId, messages);
-      }
-    },
     onError: (error) => {
       logger.error('useChat error:', error);
       setError(error.message);
@@ -227,7 +222,30 @@ export function useAgentChat({ sessionId, onReady, onError, onSessionDead }: Use
   chatActionsRef.current.setMessages = chat.setMessages;
   chatActionsRef.current.messages = chat.messages;
 
-  // ── Persist messages on every user send (onFinish covers assistant turns) ──
+  // ── Hydrate from backend when switching to a session ──────────────
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    apiFetch(`/api/session/${sessionId}/messages`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data || !Array.isArray(data) || data.length === 0) return;
+        const uiMsgs = llmMessagesToUIMessages(data);
+        if (uiMsgs.length > 0) {
+          chat.setMessages(uiMsgs);
+          saveMessages(sessionId, uiMsgs);
+        }
+      })
+      .catch(() => { /* backend unreachable — localStorage fallback is fine */ });
+    return () => { cancelled = true; };
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Persist messages ──────────────────────────────────────────────
+  const flushRef = useRef<{ sid: string | null; msgs: UIMessage[] }>({ sid: null, msgs: [] });
+  flushRef.current.sid = sessionId;
+  flushRef.current.msgs = chat.messages;
+
+  // Save whenever message count changes (covers user sends + new assistant msgs)
   const prevLenRef = useRef(initialMessages.length);
   useEffect(() => {
     if (!sessionId || chat.messages.length === 0) return;
@@ -267,6 +285,12 @@ export function useAgentChat({ sessionId, onReady, onError, onSessionDead }: Use
     [sessionId, setProcessing],
   );
 
+  // ── Flush current messages to localStorage (call before switching sessions) ──
+  const flushMessages = useCallback(() => {
+    const { sid, msgs } = flushRef.current;
+    if (sid && msgs.length > 0) saveMessages(sid, msgs);
+  }, []);
+
   return {
     messages: chat.messages,
     sendMessage: chat.sendMessage,
@@ -274,6 +298,7 @@ export function useAgentChat({ sessionId, onReady, onError, onSessionDead }: Use
     status: chat.status,
     undoLastTurn,
     approveTools,
+    flushMessages,
     transport: transportRef.current,
   };
 }

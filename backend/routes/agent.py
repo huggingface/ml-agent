@@ -298,6 +298,18 @@ async def interrupt_session(
     return {"status": "interrupted", "session_id": session_id}
 
 
+@router.get("/session/{session_id}/messages")
+async def get_session_messages(
+    session_id: str, user: dict = Depends(get_current_user)
+) -> list[dict]:
+    """Return the session's message history from memory."""
+    _check_session_access(session_id, user)
+    agent_session = session_manager.sessions.get(session_id)
+    if not agent_session or not agent_session.is_active:
+        raise HTTPException(status_code=404, detail="Session not found or inactive")
+    return [msg.model_dump() for msg in agent_session.session.context_manager.items]
+
+
 @router.post("/undo/{session_id}")
 async def undo_session(session_id: str, user: dict = Depends(get_current_user)) -> dict:
     """Undo the last turn in a session."""

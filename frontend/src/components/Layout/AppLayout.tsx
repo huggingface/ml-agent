@@ -110,7 +110,7 @@ export default function AppLayout() {
 
   const hasAnySessions = sessions.length > 0;
 
-  const { messages, sendMessage, stop, undoLastTurn, approveTools } = useAgentChat({
+  const { messages, sendMessage, stop, undoLastTurn, approveTools, flushMessages } = useAgentChat({
     sessionId: activeSessionId,
     onReady: () => logger.log('Agent ready'),
     onError: (error) => logger.error('Agent error:', error),
@@ -209,7 +209,7 @@ export default function AppLayout() {
         },
       }}
     >
-      <SessionSidebar onClose={handleSidebarClose} />
+      <SessionSidebar onClose={handleSidebarClose} onBeforeSwitch={flushMessages} />
     </Drawer>
   );
 

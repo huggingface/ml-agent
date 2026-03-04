@@ -16,6 +16,7 @@ import { apiFetch } from '@/utils/api';
 
 interface SessionSidebarProps {
   onClose?: () => void;
+  onBeforeSwitch?: () => void;
 }
 
 /** Small coloured dot for connection status */
@@ -32,7 +33,7 @@ const StatusDot = ({ connected }: { connected: boolean }) => (
   />
 );
 
-export default function SessionSidebar({ onClose }: SessionSidebarProps) {
+export default function SessionSidebar({ onClose, onBeforeSwitch }: SessionSidebarProps) {
   const { sessions, activeSessionId, createSession, deleteSession, switchSession } =
     useSessionStore();
   const { isConnected, setPlan, clearPanel } =
@@ -44,6 +45,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
 
   const handleNewSession = useCallback(async () => {
     if (isCreatingSession) return;
+    onBeforeSwitch?.();
     setIsCreatingSession(true);
     setCapacityError(null);
     try {
@@ -63,7 +65,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
     } finally {
       setIsCreatingSession(false);
     }
-  }, [isCreatingSession, createSession, setPlan, clearPanel, onClose]);
+  }, [isCreatingSession, onBeforeSwitch, createSession, setPlan, clearPanel, onClose]);
 
   const handleDelete = useCallback(
     async (sessionId: string, e: React.MouseEvent) => {
@@ -81,12 +83,13 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
 
   const handleSelect = useCallback(
     (sessionId: string) => {
+      onBeforeSwitch?.();
       switchSession(sessionId);
       setPlan([]);
       clearPanel();
       onClose?.();
     },
-    [switchSession, setPlan, clearPanel, onClose],
+    [onBeforeSwitch, switchSession, setPlan, clearPanel, onClose],
   );
 
   const formatTime = (d: string) =>
@@ -270,7 +273,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
         )}
       </Box>
 
-      {/* ── Footer: New Session + status ──────────────────────────── */}
+      {/* ── Footer: New Task + status ──────────────────────────── */}
       <Divider sx={{ opacity: 0.5 }} />
       <Box
         sx={{
@@ -319,7 +322,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
           ) : (
             <>
               <AddIcon sx={{ fontSize: 16 }} />
-              New Session
+              New Task
             </>
           )}
         </Box>
