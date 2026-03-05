@@ -11,6 +11,7 @@ from typing import Any, TypedDict
 
 import httpx
 
+from agent.core.session import Session
 from agent.tools.types import ToolResult
 
 BASE_URL = "https://datasets-server.huggingface.co"
@@ -26,9 +27,9 @@ class SplitConfig(TypedDict):
     splits: list[str]
 
 
-def _get_headers() -> dict:
+def _get_headers(token: str | None = None) -> dict:
     """Get auth headers for private/gated datasets"""
-    token = os.environ.get("HF_TOKEN")
+    token = token or os.environ.get("HF_TOKEN")
     if token:
         return {"Authorization": f"Bearer {token}"}
     return {}
@@ -39,12 +40,13 @@ async def inspect_dataset(
     config: str | None = None,
     split: str | None = None,
     sample_rows: int = 3,
+    hf_token: str | None = None,
 ) -> ToolResult:
     """
     Get comprehensive dataset info in one call.
     All API calls made in parallel for speed.
     """
-    headers = _get_headers()
+    headers = _get_headers(hf_token)
     output_parts = []
     errors = []
 
@@ -424,7 +426,9 @@ HF_INSPECT_DATASET_TOOL_SPEC = {
 }
 
 
-async def hf_inspect_dataset_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
+async def hf_inspect_dataset_handler(
+    arguments: dict[str, Any], session: Session = None
+) -> tuple[str, bool]:
     """Handler for agent tool router"""
     try:
         result = await inspect_dataset(
@@ -432,6 +436,7 @@ async def hf_inspect_dataset_handler(arguments: dict[str, Any]) -> tuple[str, bo
             config=arguments.get("config"),
             split=arguments.get("split"),
             sample_rows=min(arguments.get("sample_rows", 3), 10),
+            hf_token=session.hf_token,
         )
         return result["formatted"], not result.get("isError", False)
     except Exception as e:

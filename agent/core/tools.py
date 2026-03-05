@@ -62,7 +62,13 @@ warnings.filterwarnings(
     "ignore", category=DeprecationWarning, module="aiohttp.connector"
 )
 
-NOT_ALLOWED_TOOL_NAMES = ["hf_jobs", "hf_doc_search", "hf_doc_fetch", "hf_whoami", "paper_search"]
+NOT_ALLOWED_TOOL_NAMES = [
+    "hf_jobs",
+    "hf_doc_search",
+    "hf_doc_fetch",
+    "hf_whoami",
+    "paper_search",
+]
 
 
 def convert_mcp_content_to_string(content: list) -> str:
