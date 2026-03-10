@@ -261,12 +261,14 @@ class Handlers:
                     tool_choice="auto",
                     stream=True,
                     stream_options={"include_usage": True},
+                    max_completion_tokens=16384,
                     **llm_params,
                 )
 
                 full_content = ""
                 tool_calls_acc: dict[int, dict] = {}
                 token_count = 0
+                finish_reason = None
 
                 async for chunk in response:
                     choice = chunk.choices[0] if chunk.choices else None
@@ -277,6 +279,8 @@ class Handlers:
                         continue
 
                     delta = choice.delta
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
 
                     # Stream text deltas to the frontend
                     if delta.content:
@@ -316,6 +320,28 @@ class Handlers:
 
                 # ── Stream finished — reconstruct full message ───────
                 content = full_content or None
+
+                # Detect output truncation — tool call args will be
+                # incomplete JSON, which would poison the context.
+                if finish_reason == "length" and tool_calls_acc:
+                    logger.warning(
+                        "Output truncated (finish_reason=length) with pending "
+                        "tool calls — dropping truncated tool calls"
+                    )
+                    truncation_notice = (
+                        "\n\n[Output was truncated due to length. "
+                        "Tool calls were dropped. Break large writes "
+                        "into smaller pieces or write to sandbox in parts.]"
+                    )
+                    full_content += truncation_notice
+                    content = full_content
+                    await session.send_event(
+                        Event(
+                            event_type="assistant_chunk",
+                            data={"content": truncation_notice},
+                        )
+                    )
+                    tool_calls_acc.clear()
 
                 # Build tool_calls list from accumulated deltas
                 tool_calls: list[ToolCall] = []

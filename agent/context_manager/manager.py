@@ -133,13 +133,38 @@ class ContextManager:
     def get_messages(self) -> list[Message]:
         """Get all messages for sending to LLM.
 
-        Automatically patches any dangling tool_calls (assistant messages
-        with tool_calls that have no matching tool-result message).  This
-        can happen after errors or cancellations and would cause the LLM
-        API to reject the request.
+        Defensive gateway — fixes context corruption before every LLM call:
+        1. Sanitizes malformed tool_call arguments (truncated JSON)
+        2. Adds stub results for dangling tool_calls (missing tool results)
         """
+        self._sanitize_tool_calls()
         self._patch_dangling_tool_calls()
         return self.items
+
+    def _sanitize_tool_calls(self) -> None:
+        """Fix malformed tool_call arguments across all assistant messages.
+
+        When output is truncated (finish_reason=length), tool call arguments
+        can be incomplete JSON.  LLM APIs reject messages with invalid JSON
+        in function.arguments, breaking all subsequent calls.
+        """
+        import json
+
+        for msg in self.items:
+            if getattr(msg, "role", None) != "assistant":
+                continue
+            tool_calls = getattr(msg, "tool_calls", None)
+            if not tool_calls:
+                continue
+            for tc in tool_calls:
+                try:
+                    json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    logger.warning(
+                        "Sanitizing malformed arguments for tool_call %s (%s)",
+                        tc.id, tc.function.name,
+                    )
+                    tc.function.arguments = "{}"
 
     def _patch_dangling_tool_calls(self) -> None:
         """Add stub tool results for any tool_calls that lack a matching result.
