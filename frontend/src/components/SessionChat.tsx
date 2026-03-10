@@ -25,7 +25,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const { isConnected, isProcessing, setProcessing, activityStatus } = useAgentStore();
   const { updateSessionTitle } = useSessionStore();
 
-  const { messages, sendMessage, stop, undoLastTurn, approveTools } = useAgentChat({
+  const { messages, sendMessage, stop, status, undoLastTurn, approveTools } = useAgentChat({
     sessionId,
     isActive,
     onReady: () => logger.log(`Session ${sessionId} ready`),
@@ -105,9 +105,13 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
     prevActiveRef.current = isActive;
   }, [isActive, messages]);
 
+  // SDK status is the ground truth — if it's streaming/submitted, agent is busy
+  const sdkBusy = status === 'streaming' || status === 'submitted';
+  const busy = isProcessing || sdkBusy;
+
   const handleSendMessage = useCallback(
     async (text: string) => {
-      if (!text.trim() || isProcessing) return;
+      if (!text.trim() || busy) return;
 
       setProcessing(true);
       sendMessage({ text: text.trim(), metadata: { createdAt: new Date().toISOString() } });
@@ -129,7 +133,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
           });
       }
     },
-    [sessionId, sendMessage, messages, updateSessionTitle, isProcessing, setProcessing],
+    [sessionId, sendMessage, messages, updateSessionTitle, busy, setProcessing],
   );
 
   // Don't render UI for background sessions — hooks still run
@@ -139,14 +143,14 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
     <>
       <MessageList
         messages={messages}
-        isProcessing={isProcessing}
+        isProcessing={busy}
         approveTools={approveTools}
         onUndoLastTurn={undoLastTurn}
       />
       <ChatInput
         onSend={handleSendMessage}
         onStop={stop}
-        isProcessing={isProcessing}
+        isProcessing={busy}
         disabled={!isConnected || activityStatus.type === 'waiting-approval'}
         placeholder={activityStatus.type === 'waiting-approval' ? 'Approve or reject pending tools first...' : undefined}
       />

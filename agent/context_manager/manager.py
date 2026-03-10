@@ -142,18 +142,35 @@ class ContextManager:
         return self.items
 
     def _patch_dangling_tool_calls(self) -> None:
-        """Add stub tool results for any tool_calls that lack a matching result."""
+        """Add stub tool results for any tool_calls that lack a matching result.
+
+        Scans backwards to find the last assistant message with tool_calls,
+        which may not be items[-1] if some tool results were already added.
+        """
         if not self.items:
             return
-        last = self.items[-1]
-        if getattr(last, "role", None) != "assistant" or not getattr(last, "tool_calls", None):
+
+        # Find the last assistant message with tool_calls
+        assistant_msg = None
+        for i in range(len(self.items) - 1, -1, -1):
+            msg = self.items[i]
+            if getattr(msg, "role", None) == "assistant" and getattr(msg, "tool_calls", None):
+                assistant_msg = msg
+                break
+            # Stop scanning once we hit a user message — anything before
+            # that belongs to a previous (complete) turn.
+            if getattr(msg, "role", None) == "user":
+                break
+
+        if not assistant_msg:
             return
+
         answered_ids = {
             getattr(m, "tool_call_id", None)
             for m in self.items
             if getattr(m, "role", None) == "tool"
         }
-        for tc in last.tool_calls:
+        for tc in assistant_msg.tool_calls:
             if tc.id not in answered_ids:
                 self.items.append(
                     Message(
@@ -168,14 +185,14 @@ class ContextManager:
         """Remove the last complete turn (user msg + all assistant/tool msgs that follow).
 
         Pops from the end until the last user message is removed, keeping the
-        tool_use/tool_result pairing valid.
+        tool_use/tool_result pairing valid. Never removes the system message.
 
         Returns True if a user message was found and removed.
         """
-        if not self.items:
+        if len(self.items) <= 1:
             return False
 
-        while self.items:
+        while len(self.items) > 1:
             msg = self.items.pop()
             if getattr(msg, "role", None) == "user":
                 return True
