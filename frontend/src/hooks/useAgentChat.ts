@@ -98,19 +98,28 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onToolLog: (tool: string, log: string) => {
         if (!isActiveRef.current) return;
-        if (tool === 'hf_jobs' || tool === 'sandbox') {
-          const state = useAgentStore.getState();
-          const existingOutput = state.panelData?.output?.content || '';
-          const header = tool === 'sandbox' ? '--- Sandbox creation ---' : '--- Job execution started ---';
-          const newContent = existingOutput
-            ? existingOutput + '\n' + log
-            : header + '\n' + log;
+        const STREAMABLE_TOOLS = new Set(['hf_jobs', 'sandbox', 'bash']);
+        if (!STREAMABLE_TOOLS.has(tool)) return;
 
+        const state = useAgentStore.getState();
+        const existingOutput = state.panelData?.output?.content || '';
+        const newContent = existingOutput
+          ? existingOutput + '\n' + log
+          : log;
+
+        if (!state.panelData) {
+          // Initialize panel when it doesn't exist (bash bypasses approval, so no panel yet)
+          const title = tool === 'hf_jobs' ? 'Job Output' : 'Sandbox';
+          setPanel(
+            { title, output: { content: newContent, language: 'text' } },
+            'output',
+          );
+        } else {
           setPanelOutput({ content: newContent, language: 'text' });
+        }
 
-          if (!useLayoutStore.getState().isRightPanelOpen) {
-            setRightPanelOpen(true);
-          }
+        if (!useLayoutStore.getState().isRightPanelOpen) {
+          setRightPanelOpen(true);
         }
       },
       onConnectionChange: (connected: boolean) => {
@@ -169,12 +178,21 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
           });
           setRightPanelOpen(true);
           setLeftSidebarOpen(false);
+        } else if (toolName === 'bash' && args.command) {
+          // Initialize panel for sandbox bash — command in script tab, output tab active for streaming
+          setPanel(
+            { title: 'Sandbox', script: { content: String(args.command), language: 'bash' } },
+            'output',
+          );
         }
       },
       onToolOutputPanel: (toolName: string, _toolCallId: string, output: string, success: boolean) => {
         if (!isActiveRef.current) return;
         if (toolName === 'hf_jobs' && output) {
           setPanelOutput({ content: output, language: 'markdown' });
+          if (!success) useAgentStore.getState().setPanelView('output');
+        } else if (toolName === 'bash') {
+          // Streaming already populated the output — ensure output view on error
           if (!success) useAgentStore.getState().setPanelView('output');
         }
       },
