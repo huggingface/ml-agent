@@ -25,6 +25,32 @@ interface ToolCallGroupProps {
 }
 
 // ---------------------------------------------------------------------------
+// Hardware pricing ($/hr) — from HF Spaces & Jobs pricing
+// ---------------------------------------------------------------------------
+const HARDWARE_PRICING: Record<string, string> = {
+  'cpu-basic': 'free',
+  'cpu-upgrade': '$0.03/hr',
+  't4-small': '$0.60/hr',
+  't4-medium': '$1.00/hr',
+  'a10g-small': '$1.05/hr',
+  'a10g-large': '$3.15/hr',
+  'a10g-largex2': '$6.30/hr',
+  'a10g-largex4': '$12.60/hr',
+  'a100-large': '$4.13/hr',
+  'a100x4': '$16.52/hr',
+  'a100x8': '$33.04/hr',
+  'l4x1': '$0.80/hr',
+  'l4x4': '$3.20/hr',
+  'l40sx1': '$1.80/hr',
+  'l40sx4': '$7.20/hr',
+  'l40sx8': '$14.40/hr',
+};
+
+function costLabel(hardware: string): string | null {
+  return HARDWARE_PRICING[hardware] || null;
+}
+
+// ---------------------------------------------------------------------------
 // Visual helpers
 // ---------------------------------------------------------------------------
 
@@ -108,29 +134,49 @@ function InlineApproval({
 
   return (
     <Box sx={{ px: 1.5, py: 1.5, borderTop: '1px solid var(--tool-border)' }}>
-      {toolName === 'sandbox_create' && args && (
-        <Box sx={{ mb: 1.5 }}>
-          <Typography variant="body2" sx={{ color: 'var(--muted-text)', fontSize: '0.75rem', mb: 1 }}>
-            Create sandbox on{' '}
-            <Box component="span" sx={{ fontWeight: 500, color: 'var(--text)' }}>
-              {String(args.hardware || 'cpu-basic')}
-            </Box>
-            {!!args.private && (
-              <Box component="span" sx={{ color: 'var(--muted-text)' }}>{' (private)'}</Box>
-            )}
-          </Typography>
-        </Box>
-      )}
+      {toolName === 'sandbox_create' && args && (() => {
+        const hw = String(args.hardware || 'cpu-basic');
+        const cost = costLabel(hw);
+        return (
+          <Box sx={{ mb: 1.5 }}>
+            <Typography variant="body2" sx={{ color: 'var(--muted-text)', fontSize: '0.75rem', mb: 0.5 }}>
+              Create a remote dev environment on{' '}
+              <Box component="span" sx={{ fontWeight: 500, color: 'var(--text)' }}>
+                {hw}
+              </Box>
+              {cost && (
+                <Box component="span" sx={{ color: cost === 'free' ? 'var(--accent-green)' : 'var(--accent-yellow)', fontWeight: 500 }}>
+                  {' '}({cost})
+                </Box>
+              )}
+              {!!args.private && (
+                <Box component="span" sx={{ color: 'var(--muted-text)' }}>{' (private)'}</Box>
+              )}
+            </Typography>
+            <Typography variant="body2" sx={{ color: 'var(--muted-text)', fontSize: '0.7rem', opacity: 0.7 }}>
+              Creates a temporary HF Space to develop and test scripts before running jobs. Takes 1-2 min to start.
+            </Typography>
+          </Box>
+        );
+      })()}
 
-      {toolName === 'hf_jobs' && args && (
+      {toolName === 'hf_jobs' && args && (() => {
+        const hw = String(args.hardware_flavor || 'cpu-basic');
+        const cost = costLabel(hw);
+        return (
         <Box sx={{ mb: 1.5 }}>
           <Typography variant="body2" sx={{ color: 'var(--muted-text)', fontSize: '0.75rem', mb: 1 }}>
             Execute <Box component="span" sx={{ color: 'var(--accent-yellow)', fontWeight: 500 }}>{scriptLabel.replace('Script', 'Job')}</Box> on{' '}
             <Box component="span" sx={{ fontWeight: 500, color: 'var(--text)' }}>
-              {String(args.hardware_flavor || 'default')}
+              {hw}
             </Box>
+            {cost && (
+              <Box component="span" sx={{ color: cost === 'free' ? 'var(--accent-green)' : 'var(--accent-yellow)', fontWeight: 500 }}>
+                {' '}({cost})
+              </Box>
+            )}
             {!!args.timeout && (
-              <> with timeout <Box component="span" sx={{ fontWeight: 500, color: 'var(--text)' }}>
+              <> for up to <Box component="span" sx={{ fontWeight: 500, color: 'var(--text)' }}>
                 {String(args.timeout)}
               </Box></>
             )}
@@ -184,7 +230,8 @@ function InlineApproval({
             </Box>
           )}
         </Box>
-      )}
+        );
+      })()}
 
       <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
         <TextField
