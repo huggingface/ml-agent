@@ -261,6 +261,7 @@ class Handlers:
                 full_content = ""
                 tool_calls_acc: dict[int, dict] = {}
                 token_count = 0
+                finish_reason = None
 
                 async for chunk in response:
                     # ── Check cancellation during streaming ──
@@ -276,6 +277,8 @@ class Handlers:
                         continue
 
                     delta = choice.delta
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
 
                     # Stream text deltas to the frontend
                     if delta.content:
@@ -316,17 +319,15 @@ class Handlers:
                 # ── Stream finished — reconstruct full message ───────
                 content = full_content or None
 
-                # Build tool_calls list from accumulated deltas,
-                # dropping any with empty IDs (from interrupted streams)
+                # If output was truncated, all tool call args are garbage
+                if finish_reason == "length" and tool_calls_acc:
+                    logger.warning("Output truncated (finish_reason=length) — dropping tool calls")
+                    tool_calls_acc.clear()
+
+                # Build tool_calls list from accumulated deltas
                 tool_calls: list[ToolCall] = []
                 for idx in sorted(tool_calls_acc.keys()):
                     tc_data = tool_calls_acc[idx]
-                    if not tc_data["id"]:
-                        logger.warning(
-                            "Dropping tool_call with empty ID (name=%s) — likely interrupted stream",
-                            tc_data["function"]["name"],
-                        )
-                        continue
                     tool_calls.append(
                         ToolCall(
                             id=tc_data["id"],
@@ -351,7 +352,23 @@ class Handlers:
                         final_response = content
                     break
 
-                # Add assistant message with tool calls to history
+                # Validate tool call args (one json.loads per call, once)
+                # and split into good vs bad
+                good_tools: list[tuple[ToolCall, str, dict]] = []
+                bad_tools: list[ToolCall] = []
+                for tc in tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        good_tools.append((tc, tc.function.name, args))
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        logger.warning(
+                            "Malformed arguments for tool_call %s (%s) — skipping",
+                            tc.id, tc.function.name,
+                        )
+                        tc.function.arguments = "{}"
+                        bad_tools.append(tc)
+
+                # Add assistant message with all tool calls to context
                 assistant_msg = Message(
                     role="assistant",
                     content=content,
@@ -359,79 +376,49 @@ class Handlers:
                 )
                 session.context_manager.add_message(assistant_msg, token_count)
 
+                # Add error results for bad tool calls so the LLM
+                # knows what happened and can retry differently
+                for tc in bad_tools:
+                    error_msg = (
+                        f"ERROR: Tool call to '{tc.function.name}' had malformed JSON "
+                        f"arguments and was NOT executed. Retry with smaller content — "
+                        f"for 'write', split into multiple smaller writes using 'edit'."
+                    )
+                    session.context_manager.add_message(Message(
+                        role="tool",
+                        content=error_msg,
+                        tool_call_id=tc.id,
+                        name=tc.function.name,
+                    ))
+                    await session.send_event(Event(
+                        event_type="tool_call",
+                        data={"tool": tc.function.name, "arguments": {}, "tool_call_id": tc.id},
+                    ))
+                    await session.send_event(Event(
+                        event_type="tool_output",
+                        data={"tool": tc.function.name, "tool_call_id": tc.id, "output": error_msg, "success": False},
+                    ))
+
                 # ── Cancellation check: before tool execution ──
                 if session.is_cancelled:
                     break
 
-                # Recover any malformed tool calls (sanitize JSON + inject
-                # error results).  Returns IDs to skip during execution.
-                malformed_ids = session.context_manager.recover_malformed_tool_calls()
-                if malformed_ids:
-                    # For each malformed tool_call, emit a synthetic tool_call +
-                    # tool_output-error pair so the frontend has a matching
-                    # dynamic-tool part instead of an orphan error.
-                    for tc in tool_calls:
-                        if tc.id not in malformed_ids:
-                            continue
-                        tool_name = tc.function.name
-                        try:
-                            tool_args = json.loads(tc.function.arguments)
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            tool_args = {}
-
-                        await session.send_event(
-                            Event(
-                                event_type="tool_call",
-                                data={
-                                    "tool": tool_name,
-                                    "arguments": tool_args,
-                                    "tool_call_id": tc.id,
-                                },
-                            )
-                        )
-                        await session.send_event(
-                            Event(
-                                event_type="tool_output",
-                                data={
-                                    "tool": tool_name,
-                                    "tool_call_id": tc.id,
-                                    "output": "Malformed tool call — see error in context.",
-                                    "success": False,
-                                },
-                            )
-                        )
-
-                # Separate tools into those requiring approval and those that don't
-                approval_required_tools = []
-                non_approval_tools = []
-
-                for tc in tool_calls:
-                    if tc.id in malformed_ids:
-                        continue
-                    tool_name = tc.function.name
-                    try:
-                        tool_args = json.loads(tc.function.arguments)
-                    except (json.JSONDecodeError, TypeError) as e:
-                        logger.warning(f"Malformed tool arguments for {tool_name}: {e}")
-                        tool_args = {}
-
+                # Separate good tools into approval-required vs auto-execute
+                approval_required_tools: list[tuple[ToolCall, str, dict]] = []
+                non_approval_tools: list[tuple[ToolCall, str, dict]] = []
+                for tc, tool_name, tool_args in good_tools:
                     if _needs_approval(tool_name, tool_args, session.config):
-                        approval_required_tools.append(tc)
+                        approval_required_tools.append((tc, tool_name, tool_args))
                     else:
-                        non_approval_tools.append(tc)
+                        non_approval_tools.append((tc, tool_name, tool_args))
+
                 # Execute non-approval tools (in parallel when possible)
                 if non_approval_tools:
-                    # 1. Parse args and validate upfront
+                    # 1. Validate args upfront
                     parsed_tools: list[
-                        tuple[ChatCompletionMessageToolCall, str, dict, bool, str]
+                        tuple[ToolCall, str, dict, bool, str]
                     ] = []
-                    for tc in non_approval_tools:
-                        tool_name = tc.function.name
-                        try:
-                            tool_args = json.loads(tc.function.arguments)
-                        except (json.JSONDecodeError, TypeError):
-                            tool_args = {}
-
+                    for tc, tool_name, tool_args in non_approval_tools:
                         args_valid, error_msg = _validate_tool_args(tool_args)
                         parsed_tools.append(
                             (tc, tool_name, tool_args, args_valid, error_msg)
@@ -451,14 +438,14 @@ class Handlers:
                                 )
                             )
 
-                    # 3. Execute all valid tools in parallel
+                    # 3. Execute all valid tools in parallel, cancellable
                     async def _exec_tool(
-                        tc: ChatCompletionMessageToolCall,
+                        tc: ToolCall,
                         name: str,
                         args: dict,
                         valid: bool,
                         err: str,
-                    ) -> tuple[ChatCompletionMessageToolCall, str, dict, str, bool]:
+                    ) -> tuple[ToolCall, str, dict, str, bool]:
                         if not valid:
                             return (tc, name, args, err, False)
                         out, ok = await session.tool_router.call_tool(
@@ -466,12 +453,29 @@ class Handlers:
                         )
                         return (tc, name, args, out, ok)
 
-                    results = await asyncio.gather(
+                    gather_task = asyncio.ensure_future(asyncio.gather(
                         *[
                             _exec_tool(tc, name, args, valid, err)
                             for tc, name, args, valid, err in parsed_tools
                         ]
+                    ))
+                    cancel_task = asyncio.ensure_future(session._cancelled.wait())
+
+                    done, _ = await asyncio.wait(
+                        [gather_task, cancel_task],
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+
+                    if cancel_task in done:
+                        gather_task.cancel()
+                        try:
+                            await gather_task
+                        except asyncio.CancelledError:
+                            pass
+                        break
+
+                    cancel_task.cancel()
+                    results = gather_task.result()
 
                     # 4. Record results and send outputs (order preserved)
                     for tc, tool_name, tool_args, output, success in results:
@@ -495,56 +499,34 @@ class Handlers:
                             )
                         )
 
-                # ── Cancellation check: after tool execution ──
-                if session.is_cancelled:
-                    break
-
                 # If there are tools requiring approval, ask for batch approval
                 if approval_required_tools:
                     # Prepare batch approval data
                     tools_data = []
-                    for tc in approval_required_tools:
-                        tool_name = tc.function.name
-                        try:
-                            tool_args = json.loads(tc.function.arguments)
-                        except (json.JSONDecodeError, TypeError):
-                            tool_args = {}
-
+                    for tc, tool_name, tool_args in approval_required_tools:
                         # Resolve sandbox file paths for hf_jobs scripts so the
                         # frontend can display & edit the actual file content.
-                        if tool_name == "hf_jobs" and isinstance(
-                            tool_args.get("script"), str
-                        ):
+                        if tool_name == "hf_jobs" and isinstance(tool_args.get("script"), str):
                             from agent.tools.sandbox_tool import resolve_sandbox_script
-
                             sandbox = getattr(session, "sandbox", None)
-                            content, _ = await resolve_sandbox_script(
-                                sandbox, tool_args["script"]
-                            )
-                            if content:
-                                tool_args = {**tool_args, "script": content}
+                            resolved, _ = await resolve_sandbox_script(sandbox, tool_args["script"])
+                            if resolved:
+                                tool_args = {**tool_args, "script": resolved}
 
-                        tools_data.append(
-                            {
-                                "tool": tool_name,
-                                "arguments": tool_args,
-                                "tool_call_id": tc.id,
-                            }
-                        )
+                        tools_data.append({
+                            "tool": tool_name,
+                            "arguments": tool_args,
+                            "tool_call_id": tc.id,
+                        })
 
-                    await session.send_event(
-                        Event(
-                            event_type="approval_required",
-                            data={
-                                "tools": tools_data,  # Batch of tools
-                                "count": len(tools_data),
-                            },
-                        )
-                    )
+                    await session.send_event(Event(
+                        event_type="approval_required",
+                        data={"tools": tools_data, "count": len(tools_data)},
+                    ))
 
-                    # Store all approval-requiring tools
+                    # Store all approval-requiring tools (ToolCall objects for execution)
                     session.pending_approval = {
-                        "tool_calls": approval_required_tools,
+                        "tool_calls": [tc for tc, _, _ in approval_required_tools],
                     }
 
                     # Return early - wait for EXEC_APPROVAL operation
