@@ -56,4 +56,4 @@ EXPOSE 7860
 
 # Run the application from backend directory
 WORKDIR /app/backend
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["bash", "start.sh"]
