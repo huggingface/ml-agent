@@ -48,6 +48,7 @@ from agent.tools.hf_repo_git_tool import (
 from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
+from agent.tools.research_tool import RESEARCH_TOOL_SPEC, research_handler
 from agent.tools.sandbox_tool import get_sandbox_tools
 
 # NOTE: Private HF repo tool disabled - replaced by hf_repo_files and hf_repo_git
@@ -282,6 +283,13 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
     """Create built-in tool specifications"""
     # in order of importance
     tools = [
+        # Research sub-agent (delegates to read-only tools in independent context)
+        ToolSpec(
+            name=RESEARCH_TOOL_SPEC["name"],
+            description=RESEARCH_TOOL_SPEC["description"],
+            parameters=RESEARCH_TOOL_SPEC["parameters"],
+            handler=research_handler,
+        ),
         # Documentation search tools
         ToolSpec(
             name=EXPLORE_HF_DOCS_TOOL_SPEC["name"],
