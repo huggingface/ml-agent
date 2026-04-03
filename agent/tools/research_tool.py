@@ -277,34 +277,17 @@ async def research_handler(
                 continue
 
             try:
-                # Brief description for the UI
-                brief = tool_name
-                if tool_name == "github_find_examples":
-                    brief = f"github_find_examples({tool_args.get('repo', '')}/{tool_args.get('keyword', '')})"
-                elif tool_name == "github_read_file":
-                    brief = f"github_read_file({tool_args.get('path', '')})"
-                elif tool_name == "explore_hf_docs":
-                    brief = f"explore_hf_docs({tool_args.get('endpoint', '')})"
-                elif tool_name == "fetch_hf_docs":
-                    url = tool_args.get("url", "")
-                    brief = f"fetch_hf_docs(...{url[-50:]})" if len(url) > 50 else f"fetch_hf_docs({url})"
-                elif tool_name == "hf_inspect_dataset":
-                    brief = f"hf_inspect_dataset({tool_args.get('dataset', '')})"
+                import json as _json
+
+                args_str = _json.dumps(tool_args)[:80]
+                await _log(f"▸ {tool_name}  {args_str}")
+
                 output, _success = await session.tool_router.call_tool(
                     tool_name, tool_args, session=session
                 )
-                # Log tool name + output preview on one line
-                preview = output.replace("\n", " ").strip()[:20]
-                if len(output.strip()) > 20:
-                    preview += "…"
-                await _log(f"{tool_name} → {preview}")
                 # Truncate tool output for the research context
                 if len(output) > 8000:
-                    output = (
-                        output[:4800]
-                        + "\n...(truncated)...\n"
-                        + output[-3200:]
-                    )
+                    output = output[:4800] + "\n...(truncated)...\n" + output[-3200:]
             except Exception as e:
                 output = f"Tool error: {e}"
 
