@@ -25,14 +25,22 @@ from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
-    format_error,
-    format_header,
-    format_plan_display,
-    format_separator,
-    format_success,
-    format_tool_call,
-    format_tool_output,
-    format_turn_complete,
+    get_console,
+    print_approval_header,
+    print_approval_item,
+    print_banner,
+    print_compacted,
+    print_error,
+    print_help,
+    print_init_done,
+    print_interrupted,
+    print_markdown,
+    print_plan,
+    print_tool_call,
+    print_tool_log,
+    print_tool_output,
+    print_turn_complete,
+    print_yolo_approve,
 )
 
 litellm.drop_params = True
@@ -136,15 +144,8 @@ class Submission:
 
 
 def _create_rich_console():
-    """Create a rich Console for markdown rendering."""
-    from rich.console import Console
-    return Console(highlight=False)
-
-
-def _render_markdown(console, text: str) -> None:
-    """Render markdown text to the terminal via rich."""
-    from rich.markdown import Markdown
-    console.print(Markdown(text))
+    """Get the shared rich Console."""
+    return get_console()
 
 
 class _ThinkingShimmer:
@@ -266,99 +267,84 @@ async def event_listener(
     config=None,
 ) -> None:
     """Background task that listens for events and displays them"""
-    submission_id = [1000]  # Use list to make it mutable in closure
-    last_tool_name = [None]  # Track last tool called
+    submission_id = [1000]
+    last_tool_name = [None]
     console = _create_rich_console()
-    spinner = _ThinkingShimmer(console)
+    shimmer = _ThinkingShimmer(console)
     stream_buf = _StreamBuffer(console)
 
     while True:
         try:
             event = await event_queue.get()
 
-            # Display event
             if event.event_type == "ready":
-                print(format_success("\U0001f917 Agent ready"))
+                print_init_done()
                 ready_event.set()
             elif event.event_type == "assistant_message":
-                # Non-streaming: full message arrives at once
-                spinner.stop()
+                shimmer.stop()
                 content = event.data.get("content", "") if event.data else ""
                 if content:
-                    console.print()
-                    _render_markdown(console, content)
+                    print_markdown(content)
             elif event.event_type == "assistant_chunk":
-                spinner.stop()
+                shimmer.stop()
                 content = event.data.get("content", "") if event.data else ""
                 if content:
                     stream_buf.add_chunk(content)
             elif event.event_type == "assistant_stream_end":
                 stream_buf.finish()
             elif event.event_type == "tool_call":
-                spinner.stop()
+                shimmer.stop()
                 stream_buf.discard()
                 tool_name = event.data.get("tool", "") if event.data else ""
                 arguments = event.data.get("arguments", {}) if event.data else {}
                 if tool_name:
-                    last_tool_name[0] = tool_name  # Store for tool_output event
-                    args_str = json.dumps(arguments)[:100] + "..."
-                    print(format_tool_call(tool_name, args_str))
+                    last_tool_name[0] = tool_name
+                    args_str = json.dumps(arguments)[:80]
+                    print_tool_call(tool_name, args_str)
             elif event.event_type == "tool_output":
                 output = event.data.get("output", "") if event.data else ""
                 success = event.data.get("success", False) if event.data else False
                 if output:
-                    # Don't truncate plan_tool output, truncate everything else
                     should_truncate = last_tool_name[0] != "plan_tool"
-                    print(format_tool_output(output, success, truncate=should_truncate))
-                # After tool output, agent will think again
-                spinner.start()
+                    print_tool_output(output, success, truncate=should_truncate)
+                shimmer.start()
             elif event.event_type == "turn_complete":
-                spinner.stop()
+                shimmer.stop()
                 stream_buf.discard()
-                print(format_turn_complete())
-                # Display plan after turn complete
-                plan_display = format_plan_display()
-                if plan_display:
-                    print(plan_display)
+                print_turn_complete()
+                print_plan()
                 turn_complete_event.set()
             elif event.event_type == "interrupted":
-                spinner.stop()
+                shimmer.stop()
                 stream_buf.discard()
-                print("\n(interrupted)")
+                print_interrupted()
                 turn_complete_event.set()
             elif event.event_type == "undo_complete":
-                print("Undo complete.")
+                console.print("[dim]Undone.[/dim]")
                 turn_complete_event.set()
             elif event.event_type == "tool_log":
                 tool = event.data.get("tool", "") if event.data else ""
                 log = event.data.get("log", "") if event.data else ""
                 if log:
-                    print(f"  [{tool}] {log}")
+                    print_tool_log(tool, log)
             elif event.event_type == "tool_state_change":
-                tool = event.data.get("tool", "") if event.data else ""
-                state = event.data.get("state", "") if event.data else ""
-                if state in ("approved", "rejected", "running"):
-                    print(f"  {tool}: {state}")
+                pass  # visual noise — approval flow handles this
             elif event.event_type == "error":
-                spinner.stop()
+                shimmer.stop()
                 stream_buf.discard()
-                error = (
-                    event.data.get("error", "Unknown error")
-                    if event.data
-                    else "Unknown error"
-                )
-                print(format_error(error))
+                error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
+                print_error(error)
                 turn_complete_event.set()
             elif event.event_type == "shutdown":
-                spinner.stop()
+                shimmer.stop()
                 stream_buf.discard()
                 break
             elif event.event_type == "processing":
-                spinner.start()
+                shimmer.start()
             elif event.event_type == "compacted":
                 old_tokens = event.data.get("old_tokens", 0) if event.data else 0
                 new_tokens = event.data.get("new_tokens", 0) if event.data else 0
-                print(f"Compacted context: {old_tokens} -> {new_tokens} tokens")
+                print_compacted(old_tokens, new_tokens)
             elif event.event_type == "approval_required":
                 # Handle batch approval format
                 tools_data = event.data.get("tools", []) if event.data else []
@@ -374,7 +360,7 @@ async def event_listener(
                         }
                         for t in tools_data
                     ]
-                    print(f"\n YOLO MODE: Auto-approving {count} item(s)")
+                    print_yolo_approve(count)
                     submission_id[0] += 1
                     approval_submission = Submission(
                         id=f"approval_{submission_id[0]}",
@@ -386,14 +372,7 @@ async def event_listener(
                     await submission_queue.put(approval_submission)
                     continue
 
-                print("\n" + format_separator())
-                print(
-                    format_header(
-                        f"APPROVAL REQUIRED ({count} item{'s' if count != 1 else ''})"
-                    )
-                )
-                print(format_separator())
-
+                print_approval_header(count)
                 approvals = []
 
                 # Ask for approval for each tool
@@ -412,9 +391,7 @@ async def event_listener(
 
                     operation = arguments.get("operation", "")
 
-                    print(f"\n[Item {i}/{count}]")
-                    print(f"Tool: {tool_name}")
-                    print(f"Operation: {operation}")
+                    print_approval_item(i, count, tool_name, operation)
 
                     # Handle different tool types
                     if tool_name == "hf_jobs":
@@ -659,7 +636,7 @@ async def event_listener(
                     ),
                 )
                 await submission_queue.put(approval_submission)
-                print(format_separator() + "\n")
+                console.print()  # spacing after approval
             # Silently ignore other events
 
         except asyncio.CancelledError:
@@ -677,16 +654,7 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 
 # ── Slash command helpers ────────────────────────────────────────────────
 
-HELP_TEXT = """\
-Commands:
-  /help            Show this help
-  /undo            Undo last turn
-  /compact         Compact context window
-  /model [id]      Show available models or switch model
-  /yolo            Toggle auto-approve mode
-  /status          Show current model, turn count
-  /quit, /exit     Exit the CLI
-"""
+# Slash commands are defined in terminal_display
 
 
 def _handle_slash_command(
@@ -705,7 +673,7 @@ def _handle_slash_command(
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if command == "/help":
-        print(HELP_TEXT)
+        print_help()
         return None
 
     if command == "/undo":
@@ -764,35 +732,18 @@ def _handle_slash_command(
 
 async def main():
     """Interactive chat with the agent"""
-    from agent.utils.terminal_display import Colors
 
     # Clear screen
     os.system("clear" if os.name != "nt" else "cls")
 
-    banner = r"""
-  _   _                   _               _____                   _                    _
- | | | |_   _  __ _  __ _(_)_ __   __ _  |  ___|_ _  ___ ___     / \   __ _  ___ _ __ | |_
- | |_| | | | |/ _` |/ _` | | '_ \ / _` | | |_ / _` |/ __/ _ \   / _ \ / _` |/ _ \ '_ \| __|
- |  _  | |_| | (_| | (_| | | | | | (_| | |  _| (_| | (_|  __/  / ___ \ (_| |  __/ | | | |_
- |_| |_|\__,_|\__, |\__, |_|_| |_|\__, | |_|  \__,_|\___\___| /_/   \_\__, |\___|_| |_|\__|
-              |___/ |___/         |___/                               |___/
-    """
-
-    print(format_separator())
-    print(f"{Colors.YELLOW} {banner}{Colors.RESET}")
-    print("Type your messages below. Type /help for commands, /quit to exit.\n")
-    print(format_separator())
-    # Wait for agent to initialize
-    print("Initializing agent...")
+    print_banner()
 
     # Create prompt session for input (needed early for token prompt)
     prompt_session = PromptSession()
 
     # HF token — required, prompt if missing
     hf_token = _get_hf_token()
-    if hf_token:
-        print("HF token loaded")
-    else:
+    if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
     # Create queues for communication
@@ -809,7 +760,6 @@ async def main():
     config = load_config(config_path)
 
     # Create tool router with local mode
-    print(f"Loading MCP servers: {', '.join(config.mcpServers.keys())}")
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
 
     # Session holder for interrupt/model/status access
@@ -911,7 +861,6 @@ async def main():
         print("\n\nInterrupted by user")
 
     # Shutdown
-    print("\nShutting down agent...")
     shutdown_submission = Submission(
         id="sub_shutdown", operation=Operation(op_type=OpType.SHUTDOWN)
     )
@@ -929,7 +878,7 @@ async def main():
     # Now safe to cancel the listener (agent is done emitting events)
     listener_task.cancel()
 
-    print("Goodbye!\n")
+    get_console().print("\n[dim]Bye.[/dim]\n")
 
 
 async def headless_main(prompt: str, model: str | None = None) -> None:
@@ -993,58 +942,56 @@ async def headless_main(prompt: str, model: str | None = None) -> None:
 
     # Process events until turn completes
     console = _create_rich_console()
-    err_console = _create_rich_console()
-    err_console.file = sys.stderr
-    spinner = _ThinkingShimmer(console)
+    shimmer = _ThinkingShimmer(console)
     stream_buf = _StreamBuffer(console)
-    spinner.start()
+    shimmer.start()
 
     while True:
         event = await event_queue.get()
 
         if event.event_type == "assistant_chunk":
-            spinner.stop()
+            shimmer.stop()
             content = event.data.get("content", "") if event.data else ""
             if content:
                 stream_buf.add_chunk(content)
         elif event.event_type == "assistant_stream_end":
             stream_buf.finish()
         elif event.event_type == "assistant_message":
-            spinner.stop()
+            shimmer.stop()
             content = event.data.get("content", "") if event.data else ""
             if content:
-                _render_markdown(console, content)
+                print_markdown(content)
         elif event.event_type == "tool_call":
-            spinner.stop()
+            shimmer.stop()
             stream_buf.discard()
             tool_name = event.data.get("tool", "") if event.data else ""
             arguments = event.data.get("arguments", {}) if event.data else {}
             if tool_name:
-                args_str = json.dumps(arguments)[:100] + "..."
-                print(format_tool_call(tool_name, args_str), file=sys.stderr)
+                args_str = json.dumps(arguments)[:80]
+                print_tool_call(tool_name, args_str)
         elif event.event_type == "tool_output":
             output = event.data.get("output", "") if event.data else ""
             success = event.data.get("success", False) if event.data else False
             if output:
-                print(format_tool_output(output, success, truncate=True), file=sys.stderr)
-            spinner.start()
+                print_tool_output(output, success, truncate=True)
+            shimmer.start()
         elif event.event_type == "tool_log":
             tool = event.data.get("tool", "") if event.data else ""
             log = event.data.get("log", "") if event.data else ""
             if log:
-                print(f"  [{tool}] {log}", file=sys.stderr)
+                print_tool_log(tool, log)
         elif event.event_type == "compacted":
             old_tokens = event.data.get("old_tokens", 0) if event.data else 0
             new_tokens = event.data.get("new_tokens", 0) if event.data else 0
-            print(f"Compacted: {old_tokens} -> {new_tokens} tokens", file=sys.stderr)
+            print_compacted(old_tokens, new_tokens)
         elif event.event_type == "error":
-            spinner.stop()
+            shimmer.stop()
             stream_buf.discard()
             error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
-            print(f"ERROR: {error}", file=sys.stderr)
+            print_error(error)
             break
         elif event.event_type in ("turn_complete", "interrupted"):
-            spinner.stop()
+            shimmer.stop()
             stream_buf.discard()
             break
 
