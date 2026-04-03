@@ -90,6 +90,7 @@ srun \
         export HF_HOME="/root/.cache/huggingface"
         export ANTHROPIC_API_KEY="'"${ANTHROPIC_API_KEY}"'"
         export HF_TOKEN="'"${HF_TOKEN:-}"'"
+        unset VIRTUAL_ENV
 
         # Install agent from mounted repo
         cd /agent_repo
