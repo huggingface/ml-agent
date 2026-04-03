@@ -244,7 +244,27 @@ def _make_tool_handler(sandbox_tool_name: str):
         try:
             result = await asyncio.to_thread(sb.call_tool, sandbox_tool_name, args)
             if result.success:
-                return result.output or "(no output)", True
+                output = result.output or "(no output)"
+                cache = getattr(session, "file_content_cache", None)
+                file_path = args.get("path", "")
+
+                if sandbox_tool_name == "read" and cache and file_path:
+                    is_unchanged, last_turn = cache.check_unchanged(
+                        f"sandbox:{file_path}", output
+                    )
+                    if is_unchanged:
+                        return (
+                            f"[File unchanged since turn {last_turn}, "
+                            f"content already in context.]"
+                        ), True
+                    cache.record_read(
+                        f"sandbox:{file_path}", output, session.turn_count
+                    )
+
+                if sandbox_tool_name in ("write", "edit") and cache and file_path:
+                    cache.clear_path(f"sandbox:{file_path}")
+
+                return output, True
             else:
                 error_msg = result.error or "Unknown error"
                 output = result.output

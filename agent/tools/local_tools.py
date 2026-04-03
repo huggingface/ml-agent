@@ -119,10 +119,23 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     if p.is_dir():
         return "Cannot read a directory. Use bash with 'ls' instead.", False
     try:
-        lines = p.read_text().splitlines()
+        raw_content = p.read_text()
     except Exception as e:
         return f"read error: {e}", False
 
+    # Check if file is unchanged since last read
+    session = _kw.get("session")
+    if session is not None:
+        is_unchanged, last_turn = session.file_content_cache.check_unchanged(
+            file_path, raw_content
+        )
+        if is_unchanged:
+            return (
+                f"[File unchanged since turn {last_turn}, "
+                f"content already in context.]"
+            ), True
+
+    lines = raw_content.splitlines()
     offset = max((args.get("offset") or 1), 1)
     limit = args.get("limit") or DEFAULT_READ_LINES
 
@@ -132,6 +145,12 @@ async def _read_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
         if len(line) > MAX_LINE_LENGTH:
             line = line[:MAX_LINE_LENGTH] + "..."
         numbered.append(f"{i:>6}\t{line}")
+
+    if session is not None:
+        session.file_content_cache.record_read(
+            file_path, raw_content, session.turn_count
+        )
+
     return "\n".join(numbered), True
 
 
@@ -143,6 +162,9 @@ async def _write_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
     p = Path(file_path)
     try:
         _atomic_write(p, content)
+        session = _kw.get("session")
+        if session is not None:
+            session.file_content_cache.clear_path(file_path)
         msg = f"Wrote {len(content)} bytes to {file_path}"
         # Syntax validation for Python files
         if p.suffix == ".py":
@@ -189,6 +211,10 @@ async def _edit_handler(args: dict[str, Any], **_kw) -> tuple[str, bool]:
         _atomic_write(p, new_text)
     except Exception as e:
         return f"edit write error: {e}", False
+
+    session = _kw.get("session")
+    if session is not None:
+        session.file_content_cache.clear_path(file_path)
 
     msg = f"Edited {file_path} ({replacements} replacement{'s' if replacements > 1 else ''})"
     if fuzzy_note:
