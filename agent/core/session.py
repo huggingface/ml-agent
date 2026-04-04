@@ -12,7 +12,6 @@ from typing import Any, Optional
 
 from agent.config import Config
 from agent.context_manager.manager import ContextManager
-from agent.tools.file_content_cache import FileContentCache
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +108,6 @@ class Session:
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
-
-        self.file_content_cache = FileContentCache()
 
         # Session trajectory logging
         self.logged_events: list[dict] = []

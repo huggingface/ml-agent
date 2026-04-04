@@ -171,7 +171,7 @@ def _resolve_llm_params(model_name: str) -> dict:
 def _get_research_model(main_model: str) -> str:
     """Pick a cheaper model for research based on the main model."""
     if "anthropic/" in main_model:
-        return "anthropic/claude-haiku-4-5-20251001"
+        return "anthropic/claude-sonnet-4-6"
     # For non-Anthropic models (HF router etc.), use the same model
     return main_model
 

@@ -883,10 +883,10 @@ async def headless_main(
         config.model_name = model
 
     if max_iterations is not None:
-        config.max_requests_per_turn = max_iterations
+        config.max_iterations = max_iterations
 
     print(f"Model: {config.model_name}", file=sys.stderr)
-    print(f"Max iterations: {config.max_requests_per_turn}", file=sys.stderr)
+    print(f"Max iterations: {config.max_iterations}", file=sys.stderr)
     print(f"Prompt: {prompt}", file=sys.stderr)
     print("---", file=sys.stderr)
 
