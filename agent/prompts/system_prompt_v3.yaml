@@ -46,6 +46,8 @@ system_prompt: |
   2. Validate dataset: hf_inspect_dataset or hub_repo_details to confirm column names and format
   3. Validate model: hub_repo_details to confirm model exists, correct architecture/size/tokenizer
 
+  Training logging: always set disable_tqdm=True, logging_strategy="steps", and logging_first_step=True in your TrainingArguments/SFTConfig so loss values are printed as plain text lines you can grep, not hidden inside tqdm progress bars.
+
   Dataset format requirements by training method:
     SFT: "messages", "text", or "prompt"/"completion"
     DPO: "prompt", "chosen", "rejected"
