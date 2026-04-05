@@ -59,6 +59,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
 
   // -- Delete with dialog confirmation ------------------------------------
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleDeleteClick = useCallback(
     (sessionId: string, e: React.MouseEvent) => {
@@ -69,9 +70,12 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
   );
 
   const handleDeleteConfirm = useCallback(async () => {
-    if (!confirmDeleteId) return;
+    if (!confirmDeleteId || isDeleting) return;
     const sessionId = confirmDeleteId;
-    setConfirmDeleteId(null);
+    setIsDeleting(true);
+
+    const isLastSession = sessions.length === 1;
+
     useAgentStore.getState().clearSessionState(sessionId);
     try {
       await apiFetch(`/api/session/${sessionId}`, { method: 'DELETE' });
@@ -79,7 +83,25 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
     } catch {
       deleteSession(sessionId);
     }
-  }, [deleteSession, confirmDeleteId]);
+
+    // If this was the last session, create a new one
+    if (isLastSession) {
+      try {
+        const response = await apiFetch('/api/session', { method: 'POST' });
+        if (response.ok) {
+          const data = await response.json();
+          createSession(data.session_id);
+          setPlan([]);
+          clearPanel();
+        }
+      } catch (error) {
+        console.error('Failed to create new session after deleting last one:', error);
+      }
+    }
+
+    setIsDeleting(false);
+    setConfirmDeleteId(null);
+  }, [deleteSession, confirmDeleteId, isDeleting, sessions, createSession, setPlan, clearPanel]);
 
   const handleSelect = useCallback(
     (sessionId: string) => {
@@ -348,7 +370,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
       {/* Delete confirmation dialog */}
       <Dialog
         open={!!confirmDeleteId}
-        onClose={() => setConfirmDeleteId(null)}
+        onClose={() => !isDeleting && setConfirmDeleteId(null)}
         slotProps={{
           backdrop: { sx: { backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' } },
         }}
@@ -390,6 +412,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
           <Button
             onClick={() => setConfirmDeleteId(null)}
             size="small"
+            disabled={isDeleting}
             sx={{
               color: 'var(--muted-text)',
               fontSize: '0.82rem',
@@ -403,6 +426,8 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
             onClick={handleDeleteConfirm}
             variant="contained"
             size="small"
+            disabled={isDeleting}
+            startIcon={isDeleting ? <CircularProgress size={16} sx={{ color: '#fff' }} /> : undefined}
             sx={{
               fontSize: '0.82rem',
               px: 2.5,
@@ -414,9 +439,14 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
                 filter: 'brightness(1.15)',
                 boxShadow: 'none',
               },
+              '&.Mui-disabled': {
+                bgcolor: 'var(--accent-red)',
+                color: '#fff',
+                opacity: 0.7,
+              },
             }}
           >
-            Delete
+            {isDeleting ? 'Deleting...' : 'Delete'}
           </Button>
         </DialogActions>
       </Dialog>
