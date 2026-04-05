@@ -89,8 +89,16 @@ function parseStepArgs(step: string): Record<string, string> {
   } catch {
     // JSON likely truncated — extract key-value pairs via regex
     const result: Record<string, string> = {};
+    // Match complete "key": "value" pairs
     for (const m of jsonStr.matchAll(/"(\w+)":\s*"([^"]*)"/g)) {
       result[m[1]] = m[2];
+    }
+    // Match truncated trailing value: "key": "value... (no closing quote)
+    if (Object.keys(result).length === 0 || !result.query) {
+      const trunc = jsonStr.match(/"(\w+)":\s*"([^"]+)$/);
+      if (trunc && !result[trunc[1]]) {
+        result[trunc[1]] = trunc[2];
+      }
     }
     return result;
   }
@@ -132,6 +140,9 @@ function formatResearchStep(raw: string): { label: string } {
       search: 'Searching papers',
       paper_details: 'Reading paper details',
       read_paper: 'Reading paper',
+      citation_graph: 'Tracing citations',
+      snippet_search: 'Searching paper snippets',
+      recommend: 'Finding related papers',
       find_datasets: 'Finding paper datasets',
       find_models: 'Finding paper models',
       find_collections: 'Finding paper collections',
