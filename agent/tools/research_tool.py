@@ -85,11 +85,29 @@ ML moves fast — a method from 6 months ago may already be obsolete.
   - DPO: needs "prompt", "chosen", "rejected"
   - GRPO: needs "prompt" only
 
-## Papers
-- `hf_papers`: Search papers, get details, find linked datasets/models
+## Papers & citations
+- `hf_papers(operation="search", query=...)`: Search papers (HF-tuned for ML)
+- `hf_papers(operation="search", query=..., min_citations=50, sort_by="citationCount")`: Find highly-cited papers via Semantic Scholar
+- `hf_papers(operation="search", query=..., date_from="2024-01-01")`: Search with date filter
+- `hf_papers(operation="paper_details", arxiv_id=...)`: Metadata, citations, TL;DR
+- `hf_papers(operation="citation_graph", arxiv_id=...)`: References + citations with influence flags and intents
+- `hf_papers(operation="snippet_search", query=...)`: Semantic search across 12M+ full-text paper passages
+- `hf_papers(operation="recommend", arxiv_id=...)`: Find related papers
 
 ## Hub repo inspection
 - `hf_repo_files`: List/read files in any HF repo (model, dataset, space)
+
+# Paper analysis checklist
+
+When reading a paper, always extract:
+- **Key claims**: What does the paper propose or demonstrate?
+- **Methodology**: Architecture, training setup, key techniques
+- **Results**: Benchmark numbers, comparisons to baselines
+- **Limitations**: What the authors acknowledge or what seems missing
+
+Use `citation_graph` to trace influence: check what a breakthrough paper cites (foundations)
+and who cites it (impact and extensions). Use `snippet_search` to verify claims across
+papers (e.g., "does method X consistently outperform Y?").
 
 # Correct research pattern for ML tasks
 

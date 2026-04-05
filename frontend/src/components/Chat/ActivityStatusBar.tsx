@@ -34,8 +34,14 @@ function formatResearchStatus(raw: string): string {
         if (typeof v === 'string') args[k] = v;
       }
     } catch {
+      // JSON is likely truncated — extract complete "key": "value" pairs
       for (const m of jsonStr.matchAll(/"(\w+)":\s*"([^"]*)"/g)) {
         args[m[1]] = m[2];
+      }
+      // Also try to extract a truncated value for known keys if not found yet
+      if (!args.query && !args.arxiv_id) {
+        const partial = jsonStr.match(/"(query|arxiv_id)":\s*"([^"]*)/);
+        if (partial) args[partial[1]] = partial[2];
       }
     }
   }
@@ -62,12 +68,15 @@ function formatResearchStatus(raw: string): string {
   }
   if (toolName === 'hf_papers') {
     const op = args.operation as string;
-    const detail = (args.query) || (args.arxiv_id);
+    const detail = (args.query) || (args.arxiv_id) || (args.positive_ids);
     const opLabels: Record<string, string> = {
       trending: 'Browsing trending papers',
       search: 'Searching papers',
       paper_details: 'Reading paper details',
       read_paper: 'Reading paper',
+      citation_graph: 'Tracing citations',
+      snippet_search: 'Searching paper passages',
+      recommend: 'Finding similar papers',
       find_datasets: 'Finding paper datasets',
       find_models: 'Finding paper models',
       find_collections: 'Finding paper collections',

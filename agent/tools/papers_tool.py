@@ -2,11 +2,14 @@
 HF Papers Tool — Discover papers, read their contents, and find linked resources.
 
 Operations: trending, search, paper_details, read_paper,
-            find_datasets, find_models, find_collections, find_all_resources
+            find_datasets, find_models, find_collections, find_all_resources,
+            citation_graph, snippet_search, recommend
 """
 
 import asyncio
+import os
 import re
+import time
 from typing import Any
 
 import httpx
@@ -29,6 +32,75 @@ SORT_MAP = {
     "likes": "likes",
     "trending": "trendingScore",
 }
+
+# ---------------------------------------------------------------------------
+# Semantic Scholar API
+# ---------------------------------------------------------------------------
+
+S2_API = "https://api.semanticscholar.org"
+S2_API_KEY = os.environ.get("S2_API_KEY")
+S2_HEADERS: dict[str, str] = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
+S2_TIMEOUT = 12
+_s2_last_request: float = 0.0
+
+
+def _s2_paper_id(arxiv_id: str) -> str:
+    """Convert bare arxiv ID to S2 format."""
+    return f"ARXIV:{arxiv_id}"
+
+
+async def _s2_request(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    **kwargs: Any,
+) -> httpx.Response | None:
+    """Rate-limited S2 request with 2 retries on 429/5xx."""
+    global _s2_last_request
+    url = f"{S2_API}{path}"
+    kwargs.setdefault("headers", {}).update(S2_HEADERS)
+    kwargs.setdefault("timeout", S2_TIMEOUT)
+
+    for attempt in range(3):
+        # Rate limit: 1 request per second
+        elapsed = time.monotonic() - _s2_last_request
+        if elapsed < 1.0:
+            await asyncio.sleep(1.0 - elapsed)
+        _s2_last_request = time.monotonic()
+
+        try:
+            resp = await client.request(method, url, **kwargs)
+            if resp.status_code == 429:
+                if attempt < 2:
+                    await asyncio.sleep(60)
+                    continue
+                return None
+            if resp.status_code >= 500:
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                    continue
+                return None
+            return resp
+        except (httpx.RequestError, httpx.HTTPStatusError):
+            if attempt < 2:
+                await asyncio.sleep(3)
+                continue
+            return None
+    return None
+
+
+async def _s2_get_paper(
+    client: httpx.AsyncClient, arxiv_id: str, fields: str,
+) -> dict | None:
+    """Fetch a single paper from S2 by arxiv ID. Returns None on failure."""
+    resp = await _s2_request(
+        client, "GET",
+        f"/graph/v1/paper/{_s2_paper_id(arxiv_id)}",
+        params={"fields": fields},
+    )
+    if resp and resp.status_code == 200:
+        return resp.json()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +265,7 @@ def _format_paper_list(
     return "\n".join(lines)
 
 
-def _format_paper_detail(paper: dict) -> str:
+def _format_paper_detail(paper: dict, s2_data: dict | None = None) -> str:
     arxiv_id = paper.get("id", "")
     title = paper.get("title", "Unknown")
     upvotes = paper.get("upvotes", 0)
@@ -205,7 +277,12 @@ def _format_paper_detail(paper: dict) -> str:
     authors = paper.get("authors") or []
 
     lines = [f"# {title}"]
-    lines.append(f"**arxiv_id:** {arxiv_id} | **upvotes:** {upvotes}")
+    meta_parts = [f"**arxiv_id:** {arxiv_id}", f"**upvotes:** {upvotes}"]
+    if s2_data:
+        cites = s2_data.get("citationCount", 0)
+        influential = s2_data.get("influentialCitationCount", 0)
+        meta_parts.append(f"**citations:** {cites} ({influential} influential)")
+    lines.append(" | ".join(meta_parts))
     lines.append(f"https://huggingface.co/papers/{arxiv_id}")
     lines.append(f"https://arxiv.org/abs/{arxiv_id}")
 
@@ -218,16 +295,27 @@ def _format_paper_detail(paper: dict) -> str:
 
     if keywords:
         lines.append(f"**Keywords:** {', '.join(keywords)}")
+    if s2_data and s2_data.get("s2FieldsOfStudy"):
+        fields = [f["category"] for f in s2_data["s2FieldsOfStudy"] if f.get("category")]
+        if fields:
+            lines.append(f"**Fields:** {', '.join(fields)}")
+    if s2_data and s2_data.get("venue"):
+        lines.append(f"**Venue:** {s2_data['venue']}")
     if github:
         lines.append(f"**GitHub:** {github} ({stars} stars)")
 
+    if s2_data and s2_data.get("tldr"):
+        tldr_text = s2_data["tldr"].get("text", "")
+        if tldr_text:
+            lines.append(f"\n## TL;DR\n{tldr_text}")
     if ai_summary:
         lines.append(f"\n## AI Summary\n{ai_summary}")
     if summary:
         lines.append(f"\n## Abstract\n{_truncate(summary, 500)}")
 
     lines.append(
-        "\n**Next:** Use read_paper to read specific sections, or find_all_resources to discover linked datasets/models."
+        "\n**Next:** Use read_paper to read specific sections, find_all_resources for linked datasets/models, "
+        "or citation_graph to trace references and citations."
     )
     return "\n".join(lines)
 
@@ -441,10 +529,100 @@ async def _op_trending(args: dict[str, Any], limit: int) -> ToolResult:
     }
 
 
+def _format_s2_paper_list(papers: list[dict], title: str) -> str:
+    """Format a list of S2 paper results."""
+    lines = [f"# {title}"]
+    lines.append(f"Showing {len(papers)} result(s)\n")
+
+    for i, paper in enumerate(papers, 1):
+        ptitle = paper.get("title") or "(untitled)"
+        year = paper.get("year") or "?"
+        cites = paper.get("citationCount", 0)
+        venue = paper.get("venue") or ""
+        ext_ids = paper.get("externalIds") or {}
+        aid = ext_ids.get("ArXiv", "")
+        tldr = (paper.get("tldr") or {}).get("text", "")
+
+        lines.append(f"### {i}. {ptitle}")
+        meta = [f"Year: {year}", f"Citations: {cites}"]
+        if venue:
+            meta.append(f"Venue: {venue}")
+        if aid:
+            meta.append(f"arxiv_id: {aid}")
+        lines.append(" | ".join(meta))
+        if aid:
+            lines.append(f"https://arxiv.org/abs/{aid}")
+        if tldr:
+            lines.append(f"**TL;DR:** {tldr}")
+        lines.append("")
+
+    lines.append("Use paper_details with arxiv_id for full info, or read_paper to read sections.")
+    return "\n".join(lines)
+
+
+async def _s2_bulk_search(query: str, args: dict[str, Any], limit: int) -> ToolResult | None:
+    """Search via S2 bulk endpoint with filters. Returns None on failure."""
+    params: dict[str, Any] = {
+        "query": query,
+        "limit": limit,
+        "fields": "title,externalIds,year,citationCount,tldr,venue,publicationDate",
+    }
+
+    # Date filter
+    date_from = args.get("date_from", "")
+    date_to = args.get("date_to", "")
+    if date_from or date_to:
+        params["publicationDateOrYear"] = f"{date_from}:{date_to}"
+
+    # Fields of study
+    categories = args.get("categories")
+    if categories:
+        params["fieldsOfStudy"] = categories
+
+    # Min citations
+    min_cites = args.get("min_citations")
+    if min_cites:
+        params["minCitationCount"] = str(min_cites)
+
+    # Sort
+    sort_by = args.get("sort_by")
+    if sort_by and sort_by != "relevance":
+        params["sort"] = f"{sort_by}:desc"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await _s2_request(client, "GET", "/graph/v1/paper/search/bulk", params=params)
+        if not resp or resp.status_code != 200:
+            return None
+        data = resp.json()
+
+    papers = data.get("data") or []
+    if not papers:
+        return {
+            "formatted": f"No papers found for '{query}' with the given filters.",
+            "totalResults": 0,
+            "resultsShared": 0,
+        }
+
+    formatted = _format_s2_paper_list(papers[:limit], f"Papers matching '{query}' (Semantic Scholar)")
+    return {
+        "formatted": formatted,
+        "totalResults": data.get("total", len(papers)),
+        "resultsShared": min(limit, len(papers)),
+    }
+
+
 async def _op_search(args: dict[str, Any], limit: int) -> ToolResult:
     query = args.get("query")
     if not query:
         return _error("'query' is required for search operation.")
+
+    # Route to S2 when filters are present
+    use_s2 = any(args.get(k) for k in ("date_from", "date_to", "categories", "min_citations", "sort_by"))
+    if use_s2:
+        result = await _s2_bulk_search(query, args, limit)
+        if result is not None:
+            return result
+        # Fall back to HF search (without filters) if S2 fails
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
@@ -473,13 +651,21 @@ async def _op_paper_details(args: dict[str, Any], limit: int) -> ToolResult:
     if not arxiv_id:
         return _error("'arxiv_id' is required for paper_details.")
 
+    s2_fields = "citationCount,influentialCitationCount,tldr,s2FieldsOfStudy,venue"
+
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{HF_API}/papers/{arxiv_id}")
-        resp.raise_for_status()
-        paper = resp.json()
+        hf_coro = client.get(f"{HF_API}/papers/{arxiv_id}")
+        s2_coro = _s2_get_paper(client, arxiv_id, s2_fields)
+        hf_resp, s2_data = await asyncio.gather(hf_coro, s2_coro, return_exceptions=True)
+
+        if isinstance(hf_resp, Exception):
+            raise hf_resp
+        hf_resp.raise_for_status()
+        paper = hf_resp.json()
+        s2 = s2_data if isinstance(s2_data, dict) else None
 
     return {
-        "formatted": _format_paper_detail(paper),
+        "formatted": _format_paper_detail(paper, s2),
         "totalResults": 1,
         "resultsShared": 1,
     }
@@ -543,6 +729,113 @@ async def _op_read_paper(args: dict[str, Any], limit: int) -> ToolResult:
 
     formatted = _format_read_paper_section(section, arxiv_id)
     return {"formatted": formatted, "totalResults": 1, "resultsShared": 1}
+
+
+# ---------------------------------------------------------------------------
+# Citation graph (Semantic Scholar)
+# ---------------------------------------------------------------------------
+
+
+def _format_citation_entry(entry: dict, show_context: bool = False) -> str:
+    """Format a single citation/reference entry."""
+    paper = entry.get("citingPaper") or entry.get("citedPaper") or {}
+    title = paper.get("title") or "(untitled)"
+    year = paper.get("year") or "?"
+    cites = paper.get("citationCount", 0)
+    ext_ids = paper.get("externalIds") or {}
+    aid = ext_ids.get("ArXiv", "")
+    influential = " **[influential]**" if entry.get("isInfluential") else ""
+
+    parts = [f"- **{title}** ({year}, {cites} cites){influential}"]
+    if aid:
+        parts[0] += f"  arxiv:{aid}"
+
+    if show_context:
+        intents = entry.get("intents") or []
+        if intents:
+            parts.append(f"  Intent: {', '.join(intents)}")
+        contexts = entry.get("contexts") or []
+        for ctx in contexts[:2]:
+            if ctx:
+                parts.append(f"  > {_truncate(ctx, 200)}")
+
+    return "\n".join(parts)
+
+
+def _format_citation_graph(
+    arxiv_id: str,
+    references: list[dict] | None,
+    citations: list[dict] | None,
+) -> str:
+    lines = [f"# Citation Graph for {arxiv_id}"]
+    lines.append(f"https://arxiv.org/abs/{arxiv_id}\n")
+
+    if references is not None:
+        lines.append(f"## References ({len(references)})")
+        if references:
+            for entry in references:
+                lines.append(_format_citation_entry(entry))
+        else:
+            lines.append("No references found.")
+        lines.append("")
+
+    if citations is not None:
+        lines.append(f"## Citations ({len(citations)})")
+        if citations:
+            for entry in citations:
+                lines.append(_format_citation_entry(entry, show_context=True))
+        else:
+            lines.append("No citations found.")
+        lines.append("")
+
+    lines.append("**Tip:** Use paper_details with an arxiv_id from above to explore further.")
+    return "\n".join(lines)
+
+
+async def _op_citation_graph(args: dict[str, Any], limit: int) -> ToolResult:
+    arxiv_id = _validate_arxiv_id(args)
+    if not arxiv_id:
+        return _error("'arxiv_id' is required for citation_graph.")
+
+    direction = args.get("direction", "both")
+    s2_id = _s2_paper_id(arxiv_id)
+    fields = "title,externalIds,year,citationCount,influentialCitationCount,contexts,intents,isInfluential"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        refs, cites = None, None
+        coros = []
+        if direction in ("references", "both"):
+            coros.append(
+                _s2_request(client, "GET", f"/graph/v1/paper/{s2_id}/references",
+                            params={"fields": fields, "limit": limit})
+            )
+        if direction in ("citations", "both"):
+            coros.append(
+                _s2_request(client, "GET", f"/graph/v1/paper/{s2_id}/citations",
+                            params={"fields": fields, "limit": limit})
+            )
+
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        idx = 0
+        if direction in ("references", "both"):
+            r = results[idx]
+            if isinstance(r, httpx.Response) and r.status_code == 200:
+                refs = r.json().get("data", [])
+            idx += 1
+        if direction in ("citations", "both"):
+            r = results[idx]
+            if isinstance(r, httpx.Response) and r.status_code == 200:
+                cites = r.json().get("data", [])
+
+    if refs is None and cites is None:
+        return _error(f"Could not fetch citation data for {arxiv_id}. Paper may not be indexed by Semantic Scholar.")
+
+    total = (len(refs) if refs else 0) + (len(cites) if cites else 0)
+    return {
+        "formatted": _format_citation_graph(arxiv_id, refs, cites),
+        "totalResults": total,
+        "resultsShared": total,
+    }
 
 
 async def _op_find_datasets(args: dict[str, Any], limit: int) -> ToolResult:
@@ -704,6 +997,135 @@ async def _op_find_all_resources(args: dict[str, Any], limit: int) -> ToolResult
 
 
 # ---------------------------------------------------------------------------
+# Snippet search (Semantic Scholar)
+# ---------------------------------------------------------------------------
+
+
+def _format_snippets(snippets: list[dict], query: str) -> str:
+    lines = [f"# Snippet Search: '{query}'"]
+    lines.append(f"Found {len(snippets)} matching passage(s)\n")
+
+    for i, item in enumerate(snippets, 1):
+        paper = item.get("paper") or {}
+        ptitle = paper.get("title") or "(untitled)"
+        year = paper.get("year") or "?"
+        cites = paper.get("citationCount", 0)
+        ext_ids = paper.get("externalIds") or {}
+        aid = ext_ids.get("ArXiv", "")
+
+        snippet = item.get("snippet") or {}
+        text = snippet.get("text", "")
+        section = snippet.get("section") or ""
+
+        lines.append(f"### {i}. {ptitle} ({year}, {cites} cites)")
+        if aid:
+            lines.append(f"arxiv:{aid}")
+        if section:
+            lines.append(f"Section: {section}")
+        if text:
+            lines.append(f"> {_truncate(text, 400)}")
+        lines.append("")
+
+    lines.append("Use paper_details or read_paper with arxiv_id to explore a paper further.")
+    return "\n".join(lines)
+
+
+async def _op_snippet_search(args: dict[str, Any], limit: int) -> ToolResult:
+    query = args.get("query")
+    if not query:
+        return _error("'query' is required for snippet_search.")
+
+    params: dict[str, Any] = {
+        "query": query,
+        "limit": limit,
+        "fields": "title,externalIds,year,citationCount",
+    }
+
+    # Optional filters (same as search)
+    date_from = args.get("date_from", "")
+    date_to = args.get("date_to", "")
+    if date_from or date_to:
+        params["publicationDateOrYear"] = f"{date_from}:{date_to}"
+    if args.get("categories"):
+        params["fieldsOfStudy"] = args["categories"]
+    if args.get("min_citations"):
+        params["minCitationCount"] = str(args["min_citations"])
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await _s2_request(client, "GET", "/graph/v1/snippet/search", params=params)
+        if not resp or resp.status_code != 200:
+            return _error("Snippet search failed. Semantic Scholar may be unavailable.")
+        data = resp.json()
+
+    snippets = data.get("data") or []
+    if not snippets:
+        return {
+            "formatted": f"No snippets found for '{query}'.",
+            "totalResults": 0,
+            "resultsShared": 0,
+        }
+
+    return {
+        "formatted": _format_snippets(snippets, query),
+        "totalResults": len(snippets),
+        "resultsShared": len(snippets),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Recommendations (Semantic Scholar)
+# ---------------------------------------------------------------------------
+
+
+async def _op_recommend(args: dict[str, Any], limit: int) -> ToolResult:
+    positive_ids = args.get("positive_ids")
+    arxiv_id = _validate_arxiv_id(args)
+
+    if not arxiv_id and not positive_ids:
+        return _error("'arxiv_id' or 'positive_ids' is required for recommend.")
+
+    fields = "title,externalIds,year,citationCount,tldr,venue"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        if positive_ids and not arxiv_id:
+            # Multi-paper recommendations
+            pos = [_s2_paper_id(pid.strip()) for pid in positive_ids.split(",") if pid.strip()]
+            neg_raw = args.get("negative_ids", "")
+            neg = [_s2_paper_id(pid.strip()) for pid in neg_raw.split(",") if pid.strip()] if neg_raw else []
+            resp = await _s2_request(
+                client, "POST", "/recommendations/v1/papers/",
+                json={"positivePaperIds": pos, "negativePaperIds": neg},
+                params={"fields": fields, "limit": limit},
+            )
+        else:
+            # Single-paper recommendations
+            resp = await _s2_request(
+                client, "GET",
+                f"/recommendations/v1/papers/forpaper/{_s2_paper_id(arxiv_id)}",
+                params={"fields": fields, "limit": limit, "from": "recent"},
+            )
+
+        if not resp or resp.status_code != 200:
+            return _error("Recommendation request failed. Semantic Scholar may be unavailable.")
+        data = resp.json()
+
+    papers = data.get("recommendedPapers") or []
+    if not papers:
+        return {
+            "formatted": "No recommendations found.",
+            "totalResults": 0,
+            "resultsShared": 0,
+        }
+
+    title = f"Recommended papers based on {arxiv_id or positive_ids}"
+    return {
+        "formatted": _format_s2_paper_list(papers[:limit], title),
+        "totalResults": len(papers),
+        "resultsShared": min(limit, len(papers)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Operation dispatch
 # ---------------------------------------------------------------------------
 
@@ -712,6 +1134,9 @@ _OPERATIONS = {
     "search": _op_search,
     "paper_details": _op_paper_details,
     "read_paper": _op_read_paper,
+    "citation_graph": _op_citation_graph,
+    "snippet_search": _op_snippet_search,
+    "recommend": _op_recommend,
     "find_datasets": _op_find_datasets,
     "find_models": _op_find_models,
     "find_collections": _op_find_collections,
@@ -726,22 +1151,25 @@ _OPERATIONS = {
 HF_PAPERS_TOOL_SPEC = {
     "name": "hf_papers",
     "description": (
-        "Discover ML research papers, find their linked resources (datasets, models, collections), "
-        "and read paper contents on HuggingFace Hub and arXiv.\n\n"
-        "Use this when exploring a research area, looking for datasets for a task, "
-        "implementing a paper's approach, or trying to improve performance on something. "
-        "Typical flow:\n"
-        "  hf_papers(search/trending) → hf_papers(read_paper) → hf_papers(find_all_resources) → hf_inspect_dataset\n\n"
+        "Discover ML research papers, analyze citations, search paper contents, and find linked resources.\n\n"
+        "Combines HuggingFace Hub, arXiv, and Semantic Scholar. Use for exploring research areas, "
+        "finding datasets for a task, tracing citation chains, or implementing a paper's approach.\n\n"
+        "Typical flows:\n"
+        "  search → read_paper → find_all_resources → hf_inspect_dataset\n"
+        "  search → paper_details → citation_graph → read_paper (trace influence)\n"
+        "  snippet_search → paper_details → read_paper (find specific claims)\n\n"
         "Operations:\n"
         "- trending: Get trending daily papers, optionally filter by topic keyword\n"
-        "- search: Full-text search for papers by query\n"
-        "- paper_details: Get metadata, abstract, AI summary, and github link for a paper\n"
-        "- read_paper: Read paper contents — without section: returns abstract + table of contents; "
-        "with section: returns full section text\n"
+        "- search: Search papers. Uses HF by default (ML-tuned). Add date_from/min_citations/categories to use Semantic Scholar with filters\n"
+        "- paper_details: Metadata, abstract, AI summary, citation count, TL;DR\n"
+        "- read_paper: Read paper contents — without section: abstract + TOC; with section: full text\n"
+        "- citation_graph: Get references and citations for a paper with influence flags and citation intents\n"
+        "- snippet_search: Semantic search over full-text passages from 12M+ papers\n"
+        "- recommend: Find similar papers (single paper or positive/negative examples)\n"
         "- find_datasets: Find datasets linked to a paper\n"
         "- find_models: Find models linked to a paper\n"
         "- find_collections: Find collections that include a paper\n"
-        "- find_all_resources: Parallel fetch of datasets + models + collections for a paper (unified view)"
+        "- find_all_resources: Parallel fetch of datasets + models + collections for a paper"
     ),
     "parameters": {
         "type": "object",
@@ -754,36 +1182,69 @@ HF_PAPERS_TOOL_SPEC = {
             "query": {
                 "type": "string",
                 "description": (
-                    "Search query. Required for: search. "
-                    "Optional for: trending (filters results by keyword match on title, summary, and AI-generated keywords)."
+                    "Search query. Required for: search, snippet_search. "
+                    "Optional for: trending (filters by keyword). "
+                    "Supports boolean syntax for Semantic Scholar: '\"exact phrase\" term1 | term2'."
                 ),
             },
             "arxiv_id": {
                 "type": "string",
                 "description": (
                     "ArXiv paper ID (e.g. '2305.18290'). "
-                    "Required for: paper_details, read_paper, find_datasets, find_models, find_collections, find_all_resources. "
-                    "Get IDs from trending or search results first."
+                    "Required for: paper_details, read_paper, citation_graph, find_datasets, find_models, find_collections, find_all_resources. "
+                    "Optional for: recommend (single-paper recs). Get IDs from search results first."
                 ),
             },
             "section": {
                 "type": "string",
                 "description": (
                     "Section name or number to read (e.g. '3', 'Experiments', '4.2'). "
-                    "Optional for: read_paper. Without this, read_paper returns the abstract + table of contents "
-                    "so you can choose which section to read."
+                    "Optional for: read_paper. Without this, returns abstract + TOC."
                 ),
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["citations", "references", "both"],
+                "description": "Direction for citation_graph. Default: both.",
             },
             "date": {
                 "type": "string",
                 "description": "Date in YYYY-MM-DD format. Optional for: trending (defaults to recent papers).",
             },
+            "date_from": {
+                "type": "string",
+                "description": "Start date (YYYY-MM-DD). Triggers Semantic Scholar search. For: search, snippet_search.",
+            },
+            "date_to": {
+                "type": "string",
+                "description": "End date (YYYY-MM-DD). Triggers Semantic Scholar search. For: search, snippet_search.",
+            },
+            "categories": {
+                "type": "string",
+                "description": "Field of study filter (e.g. 'Computer Science'). Triggers Semantic Scholar search.",
+            },
+            "min_citations": {
+                "type": "integer",
+                "description": "Minimum citation count filter. Triggers Semantic Scholar search.",
+            },
+            "sort_by": {
+                "type": "string",
+                "enum": ["relevance", "citationCount", "publicationDate"],
+                "description": "Sort order for Semantic Scholar search. Default: relevance.",
+            },
+            "positive_ids": {
+                "type": "string",
+                "description": "Comma-separated arxiv IDs for multi-paper recommendations. For: recommend.",
+            },
+            "negative_ids": {
+                "type": "string",
+                "description": "Comma-separated arxiv IDs as negative examples. For: recommend.",
+            },
             "sort": {
                 "type": "string",
                 "enum": ["downloads", "likes", "trending"],
                 "description": (
-                    "Sort order for find_datasets and find_models. Default: downloads. "
-                    "Use 'downloads' for most-used, 'likes' for community favorites, 'trending' for recently popular."
+                    "Sort order for find_datasets and find_models. Default: downloads."
                 ),
             },
             "limit": {
