@@ -116,29 +116,7 @@ srun \
             REASONING_FLAG="--reasoning-effort '"${REASONING_EFFORT}"'"
         fi
 
-        MIN_REMAINING_MINUTES=30
-
         python -m agent.main --max-iterations -1 --no-stream $MODEL_FLAG $REASONING_FLAG "$PROMPT"
-
-        # Re-prompt loop: if the agent finishes early, resume with time remaining
-        while true; do
-            TIMER_OUTPUT=$(bash timer.sh 2>/dev/null)
-            if echo "$TIMER_OUTPUT" | grep -q "expired"; then
-                break
-            fi
-
-            REMAINING_HOURS=$(echo "$TIMER_OUTPUT" | grep -oP "^\d+(?=:)")
-            REMAINING_MINS=$(echo "$TIMER_OUTPUT" | grep -oP "(?<=:)\d+")
-            TOTAL_REMAINING_MINS=$(( REMAINING_HOURS * 60 + REMAINING_MINS ))
-
-            if [ "$TOTAL_REMAINING_MINS" -lt "$MIN_REMAINING_MINUTES" ]; then
-                break
-            fi
-
-            REPROMPT="You still have ${REMAINING_HOURS}h ${REMAINING_MINS}m remaining. Continue improving your model. Check evaluate.py results, try different hyperparameters or data, and keep iterating. Make sure final_model/ contains your best checkpoint."
-
-            python -m agent.main --max-iterations -1 --no-stream $MODEL_FLAG $REASONING_FLAG "$REPROMPT"
-        done
     ' > "${SOLVE_OUT}" 2>&1 || true
 
 END_TIME=$(date +%s)
