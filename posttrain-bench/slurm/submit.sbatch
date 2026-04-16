@@ -137,6 +137,9 @@ fi
 
 cp -r "${JOB_DIR}/task" "$EVAL_DIR/task" 2>/dev/null || true
 
+# Clean up container overlay from agent run to free /tmp for eval
+rm -rf "${JOB_DIR}" 2>/dev/null || true
+
 # ── Evaluation (also in container) ──
 echo "================================"
 echo "========= EVALUATING ==========="
