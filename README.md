@@ -2,9 +2,9 @@
   <img src="frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
 </p>
 
-# ML Agent
+# ML Intern
 
-An MLE agent that researches, writes, and ships good quality ML releated code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+An ML intern that autonomously researches, writes, and ships good quality ML releated code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
 
 ## Quick Start
 
