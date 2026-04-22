@@ -270,7 +270,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
                       lineHeight: 1.2,
                     }}
                   >
-                    {formatTime(session.createdAt)}
+                    {session.expired ? 'needs a catch-up' : formatTime(session.createdAt)}
                   </Typography>
                 </Box>
 

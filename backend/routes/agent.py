@@ -227,6 +227,50 @@ async def create_session(
     return SessionResponse(session_id=session_id, ready=True)
 
 
+@router.post("/session/restore-summary", response_model=SessionResponse)
+async def restore_session_summary(
+    request: Request, body: dict, user: dict = Depends(get_current_user)
+) -> SessionResponse:
+    """Create a new session seeded with a summary of the caller's prior
+    conversation. The client sends its cached messages; we run the standard
+    summarization prompt on them and drop the result into the new
+    session's context as a user-role system note.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=400, detail="Missing 'messages' array")
+
+    hf_token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        hf_token = auth_header[7:]
+    if not hf_token:
+        hf_token = request.cookies.get("hf_access_token")
+    if not hf_token:
+        hf_token = os.environ.get("HF_TOKEN")
+
+    try:
+        session_id = await session_manager.create_session(
+            user_id=user["user_id"], hf_token=hf_token
+        )
+    except SessionCapacityError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    try:
+        summarized = await session_manager.seed_from_summary(session_id, messages)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.exception("seed_from_summary failed")
+        raise HTTPException(status_code=500, detail=f"Summary failed: {e}")
+
+    logger.info(
+        f"Seeded session {session_id} for {user.get('username', 'unknown')} "
+        f"(summary of {summarized} messages)"
+    )
+    return SessionResponse(session_id=session_id, ready=True)
+
+
 @router.get("/session/{session_id}", response_model=SessionInfo)
 async def get_session(
     session_id: str, user: dict = Depends(get_current_user)

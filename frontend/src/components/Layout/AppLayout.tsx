@@ -29,7 +29,7 @@ import { apiFetch } from '@/utils/api';
 const DRAWER_WIDTH = 260;
 
 export default function AppLayout() {
-  const { sessions, activeSessionId, deleteSession } = useSessionStore();
+  const { sessions, activeSessionId, markExpired } = useSessionStore();
   const { isConnected, llmHealthError, setLlmHealthError, user } = useAgentStore();
   const {
     isLeftSidebarOpen,
@@ -123,10 +123,13 @@ export default function AppLayout() {
 
   const handleSessionDead = useCallback(
     (deadSessionId: string) => {
-      useAgentStore.getState().clearSessionState(deadSessionId);
-      deleteSession(deadSessionId);
+      // Backend lost this session — mark it expired so the chat shows a
+      // recovery banner instead of either silently failing or eagerly
+      // creating a new backend session (which would pay a summary-call
+      // cost for sessions the user may never revisit).
+      markExpired(deadSessionId);
     },
-    [deleteSession],
+    [markExpired],
   );
 
   // Close sidebar on mobile after selecting a session

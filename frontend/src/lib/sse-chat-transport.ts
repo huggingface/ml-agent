@@ -351,6 +351,11 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       },
     });
 
+    if (response.status === 404) {
+      // Backend lost this session (e.g. Space restart). Signal the UI so
+      // it can flag the session for the catch-up banner.
+      this.sideChannel.onSessionDead(sessionId);
+    }
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Request failed');
       throw new Error(`Chat request failed: ${response.status} ${errorText}`);

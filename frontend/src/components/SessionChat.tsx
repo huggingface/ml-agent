@@ -11,6 +11,7 @@ import { useAgentStore } from '@/store/agentStore';
 import { useSessionStore } from '@/store/sessionStore';
 import MessageList from '@/components/Chat/MessageList';
 import ChatInput from '@/components/Chat/ChatInput';
+import ExpiredBanner from '@/components/Chat/ExpiredBanner';
 import { apiFetch } from '@/utils/api';
 import { logger } from '@/utils/logger';
 
@@ -22,7 +23,8 @@ interface SessionChatProps {
 
 export default function SessionChat({ sessionId, isActive, onSessionDead }: SessionChatProps) {
   const { isConnected, isProcessing, activityStatus, updateSession } = useAgentStore();
-  const { updateSessionTitle } = useSessionStore();
+  const { updateSessionTitle, sessions } = useSessionStore();
+  const isExpired = sessions.find((s) => s.id === sessionId)?.expired === true;
 
   const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools } = useAgentChat({
     sessionId,
@@ -104,18 +106,22 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
         onUndoLastTurn={undoLastTurn}
         onEditAndRegenerate={editAndRegenerate}
       />
-      <ChatInput
-        sessionId={sessionId}
-        onSend={handleSendMessage}
-        onStop={handleStop}
-        isProcessing={busy}
-        disabled={!isConnected || activityStatus.type === 'waiting-approval'}
-        placeholder={
-          activityStatus.type === 'waiting-approval'
-            ? 'Approve or reject pending tools first...'
-            : undefined
-        }
-      />
+      {isExpired ? (
+        <ExpiredBanner sessionId={sessionId} />
+      ) : (
+        <ChatInput
+          sessionId={sessionId}
+          onSend={handleSendMessage}
+          onStop={handleStop}
+          isProcessing={busy}
+          disabled={!isConnected || activityStatus.type === 'waiting-approval'}
+          placeholder={
+            activityStatus.type === 'waiting-approval'
+              ? 'Approve or reject pending tools first...'
+              : undefined
+          }
+        />
+      )}
     </>
   );
 }

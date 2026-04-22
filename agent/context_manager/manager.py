@@ -68,6 +68,63 @@ def _get_hf_username(hf_token: str | None = None) -> str:
         return "unknown"
 
 
+_COMPACT_PROMPT = (
+    "Please provide a concise summary of the conversation above, focusing on "
+    "key decisions, the 'why' behind the decisions, problems solved, and "
+    "important context needed for developing further. Your summary will be "
+    "given to someone who has never worked on this project before and they "
+    "will be have to be filled in."
+)
+
+# Used when seeding a brand-new session from prior browser-cached messages.
+# Here we're writing a note to *ourselves* — so preserve the tool-call trail,
+# files produced, and planned next steps in first person. Optimized for
+# continuity, not brevity.
+_RESTORE_PROMPT = (
+    "You're about to be restored into a fresh session with no memory of the "
+    "conversation above. Write a first-person note to your future self so "
+    "you can continue right where you left off. Include:\n"
+    "  • What the user originally asked for and what progress you've made.\n"
+    "  • Every tool you called, with arguments and a one-line result summary.\n"
+    "  • Any code, files, scripts, or artifacts you produced (with paths).\n"
+    "  • Key decisions and the reasoning behind them.\n"
+    "  • What you were planning to do next.\n\n"
+    "Don't be cute. Be specific. This is the only context you'll have."
+)
+
+
+async def summarize_messages(
+    messages: list[Message],
+    model_name: str,
+    hf_token: str | None = None,
+    max_tokens: int = 2000,
+    tool_specs: list[dict] | None = None,
+    prompt: str = _COMPACT_PROMPT,
+) -> tuple[str, int]:
+    """Run a summarization prompt against a list of messages.
+
+    ``prompt`` defaults to the compaction prompt (terse, decision-focused).
+    Callers seeding a new session after a restart should pass ``_RESTORE_PROMPT``
+    instead — it preserves the tool-call trail so the agent can answer
+    follow-up questions about what it did.
+
+    Returns ``(summary_text, completion_tokens)``.
+    """
+    from agent.core.llm_params import _resolve_llm_params
+
+    prompt_messages = list(messages) + [Message(role="user", content=prompt)]
+    llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
+    response = await acompletion(
+        messages=prompt_messages,
+        max_completion_tokens=max_tokens,
+        tools=tool_specs,
+        **llm_params,
+    )
+    summary = response.choices[0].message.content or ""
+    completion_tokens = response.usage.completion_tokens if response.usage else 0
+    return summary, completion_tokens
+
+
 class ContextManager:
     """Manages conversation context and message history for the agent"""
 
@@ -318,25 +375,15 @@ class ContextManager:
         if not messages_to_summarize:
             return
 
-        messages_to_summarize.append(
-            Message(
-                role="user",
-                content="Please provide a concise summary of the conversation above, focusing on key decisions, the 'why' behind the decisions, problems solved, and important context needed for developing further. Your summary will be given to someone who has never worked on this project before and they will be have to be filled in.",
-            )
+        summary, completion_tokens = await summarize_messages(
+            messages_to_summarize,
+            model_name=model_name,
+            hf_token=hf_token,
+            max_tokens=self.compact_size,
+            tool_specs=tool_specs,
+            prompt=_COMPACT_PROMPT,
         )
-
-        from agent.core.llm_params import _resolve_llm_params
-
-        llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
-        response = await acompletion(
-            messages=messages_to_summarize,
-            max_completion_tokens=self.compact_size,
-            tools=tool_specs,
-            **llm_params,
-        )
-        summarized_message = Message(
-            role="assistant", content=response.choices[0].message.content
-        )
+        summarized_message = Message(role="assistant", content=summary)
 
         # Reconstruct: system + first user msg + summary + recent messages
         head = [system_msg] if system_msg else []
@@ -344,6 +391,16 @@ class ContextManager:
             head.append(first_user_msg)
         self.items = head + [summarized_message] + recent_messages
 
-        self.running_context_usage = (
-            len(self.system_prompt) // 4 + response.usage.completion_tokens
-        )
+        # Count the actual post-compact context — system prompt + first user
+        # turn + summary + the preserved tail all contribute, not just the
+        # summary. litellm.token_counter uses the model's real tokenizer.
+        from litellm import token_counter
+
+        try:
+            self.running_context_usage = token_counter(
+                model=model_name,
+                messages=[m.model_dump() for m in self.items],
+            )
+        except Exception as e:
+            logger.warning("token_counter failed post-compact (%s); falling back to rough estimate", e)
+            self.running_context_usage = len(self.system_prompt) // 4 + completion_tokens

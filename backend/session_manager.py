@@ -207,6 +207,69 @@ class SessionManager:
         logger.info(f"Created session {session_id} for user {user_id}")
         return session_id
 
+    async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
+        """Rehydrate a session from cached prior messages via summarization.
+
+        Runs the standard summarization prompt (same one compaction uses)
+        over the provided messages, then seeds the new session's context
+        with that summary. Tool-call pairing concerns disappear because the
+        output is plain text. Returns the number of messages summarized.
+        """
+        from litellm import Message
+
+        from agent.context_manager.manager import _RESTORE_PROMPT, summarize_messages
+
+        agent_session = self.sessions.get(session_id)
+        if not agent_session:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Parse into Message objects, tolerating malformed entries.
+        parsed: list[Message] = []
+        for raw in messages:
+            if raw.get("role") == "system":
+                continue  # the new session has its own system prompt
+            try:
+                parsed.append(Message.model_validate(raw))
+            except Exception as e:
+                logger.warning("Dropping malformed message during seed: %s", e)
+
+        if not parsed:
+            return 0
+
+        session = agent_session.session
+        # Pass the real tool specs so the summarizer sees what the agent
+        # actually has — otherwise Anthropic's modify_params injects a
+        # dummy tool and the summarizer editorializes that the original
+        # tool calls were fabricated.
+        tool_specs = None
+        try:
+            tool_specs = agent_session.tool_router.get_tool_specs_for_llm()
+        except Exception:
+            pass
+        try:
+            summary, _ = await summarize_messages(
+                parsed,
+                model_name=session.config.model_name,
+                hf_token=session.hf_token,
+                max_tokens=4000,
+                prompt=_RESTORE_PROMPT,
+                tool_specs=tool_specs,
+            )
+        except Exception as e:
+            logger.error("Summary call failed during seed: %s", e)
+            raise
+
+        seed = Message(
+            role="user",
+            content=(
+                "[SYSTEM: Your prior memory of this conversation — written "
+                "in your own voice right before restart. Continue from here.]\n\n"
+                + (summary or "(no summary returned)")
+            ),
+        )
+        session.context_manager.items.append(seed)
+        return len(parsed)
+
     @staticmethod
     async def _cleanup_sandbox(session: Session) -> None:
         """Delete the sandbox Space if one was created for this session."""

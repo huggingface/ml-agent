@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { SessionMeta } from '@/types/agent';
-import { deleteMessages } from '@/lib/chat-message-store';
+import { deleteMessages, moveMessages } from '@/lib/chat-message-store';
+import { moveBackendMessages, deleteBackendMessages } from '@/lib/backend-message-store';
 
 interface SessionStore {
   sessions: SessionMeta[];
@@ -14,6 +15,15 @@ interface SessionStore {
   setSessionActive: (id: string, isActive: boolean) => void;
   updateSessionTitle: (id: string, title: string) => void;
   setNeedsAttention: (id: string, needs: boolean) => void;
+  /** Mark a session as expired (backend no longer has it). The UI shows a
+   *  recovery banner and disables input. */
+  markExpired: (id: string) => void;
+  /** Clear the expired flag (used after restore-with-summary succeeds). */
+  clearExpired: (id: string) => void;
+  /** Atomically swap a session's id in the list + both localStorage caches.
+   *  Used when we rehydrate an expired session into a freshly-created backend
+   *  session — preserves title, timestamps, and messages. */
+  renameSession: (oldId: string, newId: string) => void;
 }
 
 export const useSessionStore = create<SessionStore>()(
@@ -38,6 +48,7 @@ export const useSessionStore = create<SessionStore>()(
 
       deleteSession: (id: string) => {
         deleteMessages(id);
+        deleteBackendMessages(id);
         set((state) => {
           const newSessions = state.sessions.filter((s) => s.id !== id);
           const newActiveId =
@@ -49,6 +60,32 @@ export const useSessionStore = create<SessionStore>()(
             activeSessionId: newActiveId,
           };
         });
+      },
+
+      markExpired: (id: string) => {
+        set((state) => ({
+          sessions: state.sessions.map((s) => (s.id === id ? { ...s, expired: true } : s)),
+        }));
+      },
+
+      clearExpired: (id: string) => {
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === id ? { ...s, expired: false } : s,
+          ),
+        }));
+      },
+
+      renameSession: (oldId: string, newId: string) => {
+        if (oldId === newId) return;
+        moveMessages(oldId, newId);
+        moveBackendMessages(oldId, newId);
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            s.id === oldId ? { ...s, id: newId, expired: false } : s,
+          ),
+          activeSessionId: state.activeSessionId === oldId ? newId : state.activeSessionId,
+        }));
       },
 
       switchSession: (id: string) => {
