@@ -445,6 +445,24 @@ async def event_listener(
                         if schedule:
                             print(f"Schedule: {schedule}")
 
+                    elif tool_name == "local_finetune":
+                        script = arguments.get("script", "")
+                        deps = arguments.get("dependencies", [])
+                        output_dir = arguments.get("output_dir", "")
+                        timeout = arguments.get("timeout", "2h")
+
+                        if script:
+                            print(f"Script:\n{script}")
+                        dep_list = ["mlx-lm"] + [d for d in deps if d != "mlx-lm"]
+                        print(f"Dependencies: {', '.join(dep_list)}")
+                        if output_dir:
+                            print(f"Output dir: {output_dir}")
+                        print(f"Timeout: {timeout}")
+
+                        check_message = check_training_script_save_pattern(script)
+                        if check_message:
+                            print(check_message)
+
                     elif tool_name == "hf_private_repos":
                         # Handle private repo operations
                         args = _safe_get_args(arguments)

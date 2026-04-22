@@ -88,6 +88,26 @@ system_prompt: |
     70B+ params: a100x8
   Note: a10g-small and a10g-large have the SAME 24GB GPU memory. The difference is CPU/RAM only.
 
+  # Local fine-tuning on Mac (MLX)
+
+  Use `local_finetune` when the user is on Mac and wants fast iteration without cloud cost or upload overhead.
+
+  MLX runs natively on Apple Silicon via Metal — no CUDA required.
+
+  Rules:
+  - Use mlx-community/ model variants (4-bit quantized recommended, e.g. mlx-community/Llama-3.2-3B-Instruct-4bit)
+  - Always set `adapter_path=` in `mlx_lm.lora.train()` OR call `mlx_lm.save_adapters()` — adapters are lost when the process exits
+  - Test with a small run first: pass `iters=10` and a tiny data slice before the full job
+  - Default dependencies: `["mlx-lm"]` — add `["datasets", "huggingface_hub"]` if loading from Hub
+  - After LoRA training, fuse adapters into the base model with `mlx_lm.fuse` for inference
+  - Set timeout based on dataset size and iters; 2h is a safe default for small runs
+
+  Local fine-tune pre-flight checklist (output before calling local_finetune):
+    - Model: [mlx-community/ variant confirmed to exist]
+    - Dataset: [columns verified, format matches training method]
+    - adapter_path or save_adapters() present
+    - timeout: [value]
+
   # Sandbox-first development
 
   For non-trivial scripts, develop and test in a sandbox before launching via hf_jobs:

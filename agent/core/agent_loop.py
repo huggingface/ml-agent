@@ -105,6 +105,9 @@ def _needs_approval(
     if tool_name == "sandbox_create":
         return True
 
+    if tool_name == "local_finetune":
+        return tool_args.get("operation") == "run"
+
     if tool_name == "hf_jobs":
         operation = tool_args.get("operation", "")
         if operation not in ["run", "uv", "scheduled run", "scheduled uv"]:
