@@ -22,11 +22,7 @@ from prompt_toolkit import PromptSession
 
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
-from agent.core.provider_adapters import (
-    get_available_models,
-    is_valid_model_name,
-    resolve_adapter,
-)
+from agent.core import model_switcher
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
 from agent.utils.reliability_checks import check_training_script_save_pattern
@@ -54,30 +50,6 @@ litellm.drop_params = True
 # on every error — users don't need it, and our friendly errors cover the case.
 litellm.suppress_debug_info = True
 
-
-# ── Suggested models shown by `/model` (not a gate) ──────────────────────
-# Users can paste any HF model id (e.g. "MiniMaxAI/MiniMax-M2.7") or use one
-# of the `anthropic/` / `openai/` prefixes for direct API access. For HF ids,
-# append ":fastest" / ":cheapest" / ":preferred" / ":<provider>" to override
-# the default routing policy (auto = fastest with failover).
-def _suggested_models() -> list[dict[str, Any]]:
-    return get_available_models()
-
-
-def _looks_like_hf_model_id(model_id: str) -> bool:
-    adapter = resolve_adapter(model_id)
-    if adapter:
-        return adapter.provider_id == "huggingface"
-
-    bare = model_id.removeprefix("huggingface/").split(":", 1)[0]
-    parts = bare.split("/")
-    return len(parts) >= 2 and all(parts)
-
-
-def _is_valid_model_id(model_id: str) -> bool:
-    return is_valid_model_name(model_id) or _looks_like_hf_model_id(model_id)
-
-
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
     args = arguments.get("args", {})
@@ -87,83 +59,6 @@ def _safe_get_args(arguments: dict) -> dict:
     return args if isinstance(args, dict) else {}
 
 
-_ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
-
-
-def _print_model_preflight(model_id: str, console) -> None:
-    """Validate a model switch against the HF router catalog and show the
-    user what they're about to use (providers, price, context, tool support).
-
-    Anthropic/OpenAI ids skip the catalog — those are direct API calls.
-    For unknown HF ids we print a red warning with fuzzy suggestions but
-    still allow the switch (the catalog might be lagging).
-    """
-    if model_id.startswith(("anthropic/", "openai/")):
-        console.print(f"[green]Model switched to {model_id}[/green]")
-        return
-
-    adapter = resolve_adapter(model_id)
-    if adapter and adapter.provider_id != "huggingface":
-        console.print(f"[green]Model switched to {model_id}[/green]")
-        return
-
-    from agent.core import hf_router_catalog as cat
-
-    bare, _, tag = model_id.partition(":")
-    info = cat.lookup(bare)
-    if info is None:
-        console.print(
-            f"[bold red]Warning:[/bold red] '{bare}' isn't in the HF router "
-            "catalog. Switching anyway — first call may fail."
-        )
-        suggestions = cat.fuzzy_suggest(bare)
-        if suggestions:
-            console.print(f"[dim]Did you mean: {', '.join(suggestions)}[/dim]")
-        return
-
-    live = info.live_providers
-    if not live:
-        console.print(
-            f"[bold red]Warning:[/bold red] '{bare}' has no live providers "
-            "right now. First call will likely fail."
-        )
-        return
-
-    if tag and tag not in _ROUTING_POLICIES:
-        matched = [p for p in live if p.provider == tag]
-        if not matched:
-            names = ", ".join(p.provider for p in live)
-            console.print(
-                f"[bold red]Warning:[/bold red] provider '{tag}' doesn't serve "
-                f"'{bare}'. Live providers: {names}. Switching anyway."
-            )
-            return
-
-    if not info.any_supports_tools:
-        console.print(
-            f"[bold red]Warning:[/bold red] no provider for '{bare}' advertises "
-            "tool-call support. This agent relies on tool calls — expect errors."
-        )
-
-    console.print(f"[green]Model switched to {model_id}[/green]")
-    if tag in _ROUTING_POLICIES:
-        policy = tag
-    elif tag:
-        policy = f"pinned to {tag}"
-    else:
-        policy = "auto (fastest)"
-    console.print(f"  [dim]routing: {policy}[/dim]")
-    for p in live:
-        price = (
-            f"${p.input_price:g}/${p.output_price:g} per M tok"
-            if p.input_price is not None and p.output_price is not None
-            else "price n/a"
-        )
-        ctx = f"{p.context_length:,} ctx" if p.context_length else "ctx n/a"
-        tools = "tools" if p.supports_tools else "no tools"
-        console.print(f"  [dim]{p.provider}: {price}, {ctx}, {tools}[/dim]")
-
-
 def _get_hf_token() -> str | None:
     """Get HF token from environment, huggingface_hub API, or cached token file."""
     token = os.environ.get("HF_TOKEN")
@@ -171,7 +66,6 @@ def _get_hf_token() -> str | None:
         return token
     try:
         from huggingface_hub import HfApi
-
         api = HfApi()
         token = api.token
         if token:
@@ -224,12 +118,9 @@ async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
             login(token=token, add_to_git_credential=False)
             print("Token saved to ~/.cache/huggingface/token")
         except Exception as e:
-            print(
-                f"Warning: could not persist token ({e}), using for this session only."
-            )
+            print(f"Warning: could not persist token ({e}), using for this session only.")
 
         return token
-
 
 @dataclass
 class Operation:
@@ -255,9 +146,9 @@ def _create_rich_console():
 class _ThinkingShimmer:
     """Animated shiny/shimmer thinking indicator — a bright gradient sweeps across the text."""
 
-    _BASE = (90, 90, 110)  # dim base color
-    _HIGHLIGHT = (255, 200, 80)  # bright shimmer highlight (warm gold)
-    _WIDTH = 5  # shimmer width in characters
+    _BASE = (90, 90, 110)       # dim base color
+    _HIGHLIGHT = (255, 200, 80) # bright shimmer highlight (warm gold)
+    _WIDTH = 5                  # shimmer width in characters
     _FPS = 24
 
     def __init__(self, console):
@@ -338,7 +229,7 @@ class _StreamBuffer:
         if idx == -1:
             return None
         block = self._buffer[:idx]
-        self._buffer = self._buffer[idx + 2 :]
+        self._buffer = self._buffer[idx + 2:]
         return block
 
     async def flush_ready(
@@ -364,9 +255,7 @@ class _StreamBuffer:
         """Flush complete blocks, then render whatever incomplete tail remains."""
         await self.flush_ready(cancel_event=cancel_event, instant=instant)
         if self._buffer.strip():
-            await print_markdown(
-                self._buffer, cancel_event=cancel_event, instant=instant
-            )
+            await print_markdown(self._buffer, cancel_event=cancel_event, instant=instant)
         self._buffer = ""
 
     def discard(self):
@@ -464,11 +353,7 @@ async def event_listener(
             elif event.event_type == "error":
                 shimmer.stop()
                 stream_buf.discard()
-                error = (
-                    event.data.get("error", "Unknown error")
-                    if event.data
-                    else "Unknown error"
-                )
+                error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
                 print_error(error)
                 turn_complete_event.set()
             elif event.event_type == "shutdown":
@@ -730,9 +615,7 @@ async def event_listener(
                             f"Approve item {i}? (y=yes, yolo=approve all, n=no, or provide feedback): "
                         )
                     except (KeyboardInterrupt, EOFError):
-                        get_console().print(
-                            "[dim]Approval cancelled — rejecting remaining items[/dim]"
-                        )
+                        get_console().print("[dim]Approval cancelled — rejecting remaining items[/dim]")
                         approvals.append(
                             {
                                 "tool_call_id": tool_call_id,
@@ -818,7 +701,7 @@ async def get_user_input(prompt_session: PromptSession) -> str:
 # Slash commands are defined in terminal_display
 
 
-def _handle_slash_command(
+async def _handle_slash_command(
     cmd: str,
     config,
     session_holder: list,
@@ -828,6 +711,9 @@ def _handle_slash_command(
     """
     Handle a slash command. Returns a Submission to enqueue, or None if
     the command was handled locally (caller should set turn_complete_event).
+
+    Async because ``/model`` fires a probe ping to validate the model+effort
+    combo before committing the switch.
     """
     parts = cmd.strip().split(None, 1)
     command = parts[0].lower()
@@ -854,40 +740,16 @@ def _handle_slash_command(
     if command == "/model":
         console = get_console()
         if not arg:
-            current = config.model_name if config else ""
-            console.print("[bold]Current model:[/bold]")
-            console.print(f"  {current}")
-            console.print("\n[bold]Suggested:[/bold]")
-            for m in _suggested_models():
-                marker = " [dim]<-- current[/dim]" if m["id"] == current else ""
-                provider = m.get("providerLabel") or m.get("provider") or "provider"
-                console.print(
-                    f"  {m['id']}  [dim]({m['label']} · {provider})[/dim]{marker}"
-                )
-            console.print(
-                "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
-                "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-                "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
-            )
+            model_switcher.print_model_listing(config, console)
             return None
-        if not _is_valid_model_id(arg):
-            console.print(f"[bold red]Invalid model id format:[/bold red] {arg}")
-            console.print(
-                "[dim]Expected:\n"
-                "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
-                "  • anthropic/<model>\n"
-                "  • openai/<model>[/dim]"
-            )
+        if not model_switcher.is_valid_model_id(arg):
+            model_switcher.print_invalid_id(arg, console)
             return None
-        normalized = (
-            arg.removeprefix("huggingface/") if _looks_like_hf_model_id(arg) else arg
-        )
-        _print_model_preflight(normalized, console)
+        normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
-        if session:
-            session.update_model(normalized)
-        else:
-            config.model_name = normalized
+        await model_switcher.probe_and_switch_model(
+            normalized, config, session, console, _get_hf_token(),
+        )
         return None
 
     if command == "/yolo":
@@ -898,14 +760,19 @@ def _handle_slash_command(
 
     if command == "/effort":
         console = get_console()
-        valid = {"minimal", "low", "medium", "high", "off"}
+        valid = {"minimal", "low", "medium", "high", "xhigh", "max", "off"}
+        session = session_holder[0] if session_holder else None
         if not arg:
             current = config.reasoning_effort or "off"
-            console.print(f"[bold]Reasoning effort:[/bold] {current}")
+            console.print(f"[bold]Reasoning effort preference:[/bold] {current}")
+            if session and session.model_effective_effort:
+                console.print("[dim]Probed per model:[/dim]")
+                for m, eff in session.model_effective_effort.items():
+                    console.print(f"  [dim]{m}: {eff or 'off'}[/dim]")
             console.print(
-                "[dim]Set with '/effort minimal|low|medium|high|off'. "
-                "Applies to models that support it (GPT-5 / o-series, Claude "
-                "extended thinking, HF reasoning models); dropped otherwise.[/dim]"
+                "[dim]Set with '/effort minimal|low|medium|high|xhigh|max|off'. "
+                "'max' and 'xhigh' are Anthropic-only; the cascade falls back "
+                "to whatever the model actually accepts.[/dim]"
             )
             return None
         level = arg.lower()
@@ -914,7 +781,16 @@ def _handle_slash_command(
             console.print(f"[dim]Expected one of: {', '.join(sorted(valid))}[/dim]")
             return None
         config.reasoning_effort = None if level == "off" else level
+        # Drop the per-model probe cache — the new preference may resolve
+        # differently. Next ``/model`` (or the retry safety net) reprobes.
+        if session is not None:
+            session.model_effective_effort.clear()
         console.print(f"[green]Reasoning effort: {level}[/green]")
+        if session is not None:
+            console.print(
+                "[dim]run /model <current> to re-probe, or send a message — "
+                "the agent adjusts automatically if the new level isn't supported.[/dim]"
+            )
         return None
 
     if command == "/status":
@@ -948,7 +824,6 @@ async def main():
     hf_user = None
     try:
         from huggingface_hub import HfApi
-
         hf_user = HfApi(token=hf_token).whoami().get("name")
     except Exception:
         pass
@@ -958,7 +833,6 @@ async def main():
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
     from agent.core import hf_router_catalog
-
     asyncio.create_task(asyncio.to_thread(hf_router_catalog.prewarm))
 
     # Create queues for communication
@@ -1101,12 +975,8 @@ async def main():
 
             # Handle slash commands
             if user_input.strip().startswith("/"):
-                sub = _handle_slash_command(
-                    user_input.strip(),
-                    config,
-                    session_holder,
-                    submission_queue,
-                    submission_id,
+                sub = await _handle_slash_command(
+                    user_input.strip(), config, session_holder, submission_queue, submission_id
                 )
                 if sub is None:
                     # Command handled locally, loop back for input
@@ -1169,10 +1039,7 @@ async def headless_main(
 
     hf_token = _get_hf_token()
     if not hf_token:
-        print(
-            "ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.",
-            file=sys.stderr,
-        )
+        print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
         sys.exit(1)
 
     print(f"HF token loaded", file=sys.stderr)
@@ -1313,35 +1180,26 @@ async def headless_main(
                 for t in tools_data
             ]
             _hl_sub_id[0] += 1
-            await submission_queue.put(
-                Submission(
-                    id=f"hl_approval_{_hl_sub_id[0]}",
-                    operation=Operation(
-                        op_type=OpType.EXEC_APPROVAL,
-                        data={"approvals": approvals},
-                    ),
-                )
-            )
+            await submission_queue.put(Submission(
+                id=f"hl_approval_{_hl_sub_id[0]}",
+                operation=Operation(
+                    op_type=OpType.EXEC_APPROVAL,
+                    data={"approvals": approvals},
+                ),
+            ))
         elif event.event_type == "compacted":
             old_tokens = event.data.get("old_tokens", 0) if event.data else 0
             new_tokens = event.data.get("new_tokens", 0) if event.data else 0
             print_compacted(old_tokens, new_tokens)
         elif event.event_type == "error":
             stream_buf.discard()
-            error = (
-                event.data.get("error", "Unknown error")
-                if event.data
-                else "Unknown error"
-            )
+            error = event.data.get("error", "Unknown error") if event.data else "Unknown error"
             print_error(error)
             break
         elif event.event_type in ("turn_complete", "interrupted"):
             stream_buf.discard()
             history_size = event.data.get("history_size", "?") if event.data else "?"
-            print(
-                f"\n--- Agent {event.event_type} (history_size={history_size}) ---",
-                file=sys.stderr,
-            )
+            print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
             break
 
     # Shutdown
@@ -1361,7 +1219,6 @@ def cli():
     """Entry point for the ml-intern CLI command."""
     import logging as _logging
     import warnings
-
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
     # Suppress litellm pydantic deprecation warnings
@@ -1370,23 +1227,12 @@ def cli():
     warnings.filterwarnings("ignore", category=SyntaxWarning, module="whoosh")
 
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
-    parser.add_argument(
-        "prompt", nargs="?", default=None, help="Run headlessly with this prompt"
-    )
-    parser.add_argument(
-        "--model", "-m", default=None, help=f"Model to use (default: from config)"
-    )
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=None,
-        help="Max LLM requests per turn (default: 50, use -1 for unlimited)",
-    )
-    parser.add_argument(
-        "--no-stream",
-        action="store_true",
-        help="Disable token streaming (use non-streaming LLM calls)",
-    )
+    parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
+    parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
+    parser.add_argument("--max-iterations", type=int, default=None,
+                        help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
+    parser.add_argument("--no-stream", action="store_true",
+                        help="Disable token streaming (use non-streaming LLM calls)")
     args = parser.parse_args()
 
     try:
@@ -1394,14 +1240,7 @@ def cli():
             max_iter = args.max_iterations
             if max_iter is not None and max_iter < 0:
                 max_iter = 10_000  # effectively unlimited
-            asyncio.run(
-                headless_main(
-                    args.prompt,
-                    model=args.model,
-                    max_iterations=max_iter,
-                    stream=not args.no_stream,
-                )
-            )
+            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
         else:
             asyncio.run(main())
     except KeyboardInterrupt:

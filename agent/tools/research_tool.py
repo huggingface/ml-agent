@@ -15,6 +15,7 @@ from litellm import Message, acompletion
 
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
+from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event
 
 logger = logging.getLogger(__name__)
@@ -246,10 +247,16 @@ async def research_handler(
     # Use a cheaper/faster model for research
     main_model = session.config.model_name
     research_model = _get_research_model(main_model)
+    # Research is a cheap sub-call — cap the main session's effort at "high"
+    # so a user preference of ``max``/``xhigh`` (valid for Opus 4.6/4.7) doesn't
+    # propagate to a Sonnet research model that may not accept those levels.
+    # We also haven't probed this sub-model so we don't know its ceiling.
+    _pref = getattr(session.config, "reasoning_effort", None)
+    _capped = "high" if _pref in ("max", "xhigh") else _pref
     llm_params = _resolve_llm_params(
         research_model,
         getattr(session, "hf_token", None),
-        reasoning_effort=getattr(session.config, "reasoning_effort", None),
+        reasoning_effort=_capped,
     )
 
     # Get read-only tool specs from the session's tool router
@@ -317,8 +324,9 @@ async def research_handler(
                 ),
             ))
             try:
+                _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
                 response = await acompletion(
-                    messages=messages,
+                    messages=_msgs,
                     tools=None,  # no tools — force text response
                     stream=False,
                     timeout=120,
@@ -342,9 +350,12 @@ async def research_handler(
             ))
 
         try:
+            _msgs, _tools = with_prompt_caching(
+                messages, tool_specs if tool_specs else None, llm_params.get("model")
+            )
             response = await acompletion(
-                messages=messages,
-                tools=tool_specs if tool_specs else None,
+                messages=_msgs,
+                tools=_tools,
                 tool_choice="auto",
                 stream=False,
                 timeout=120,
@@ -440,8 +451,9 @@ async def research_handler(
         ),
     ))
     try:
+        _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
         response = await acompletion(
-            messages=messages,
+            messages=_msgs,
             tools=None,
             stream=False,
             timeout=120,
