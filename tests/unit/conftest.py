@@ -23,7 +23,12 @@ def _install_stubs():
     It's called from pytest_configure which runs before collection.
     """
     # Web frameworks
-    sys.modules['fastapi'] = MagicMock()
+    fastapi_module = create_fake_package('fastapi')
+    fastapi_module.FastAPI = MagicMock
+    fastapi_module.testclient = MagicMock()
+    fastapi_module.testclient.TestClient = MagicMock
+    sys.modules['fastapi'] = fastapi_module
+    sys.modules['fastapi.testclient'] = fastapi_module.testclient
     sys.modules['starlette'] = MagicMock()
     
     # HTTP and networking
