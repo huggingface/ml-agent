@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 
 OPENID_PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface.co")
 AUTH_ENABLED = bool(os.environ.get("OAUTH_CLIENT_ID", ""))
-HF_EMPLOYEE_ORG = os.environ.get("HF_EMPLOYEE_ORG", "huggingface")
+# The HF org whose members are allowed to select Opus. Default is
+# ``ml-agent-explorers`` — the same join-org promoted on the WelcomeScreen
+# that grants free HF inference credits. "HF org" here means any org on the
+# Hub, not HF employees specifically; override with OPUS_ACCESS_ORG if you
+# want to restrict further (e.g. to ``huggingface`` for staff-only).
+OPUS_ACCESS_ORG = os.environ.get("OPUS_ACCESS_ORG", "ml-agent-explorers")
 
 # Simple in-memory token cache: token -> (user_info, expiry_time)
 _token_cache: dict[str, tuple[dict[str, Any], float]] = {}
@@ -232,18 +237,20 @@ def _extract_token(request: Request) -> str | None:
     return request.cookies.get("hf_access_token")
 
 
-async def require_huggingface_org_member(request: Request) -> bool:
-    """Return True if the caller is a member of the ``huggingface`` org.
+async def require_opus_access_org_member(request: Request) -> bool:
+    """Return True if the caller is a member of the configured Opus-access org.
 
     Used to gate endpoints that can push a session onto an Anthropic model
-    billed to the Space's ``ANTHROPIC_API_KEY``. Returns True unconditionally
-    in dev mode so local testing isn't blocked.
+    billed to the Space's ``ANTHROPIC_API_KEY``. Defaults to
+    ``ml-agent-explorers`` (the join-org promoted on the WelcomeScreen);
+    set ``OPUS_ACCESS_ORG`` to lock it down further. Returns True
+    unconditionally in dev mode so local testing isn't blocked.
     """
     if not AUTH_ENABLED:
         return True
     token = _extract_token(request)
     if not token:
         return False
-    return await check_org_membership(token, HF_EMPLOYEE_ORG)
+    return await check_org_membership(token, OPUS_ACCESS_ORG)
 
 

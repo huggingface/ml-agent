@@ -10,7 +10,7 @@ import logging
 import os
 from typing import Any
 
-from dependencies import get_current_user, require_huggingface_org_member
+from dependencies import get_current_user, require_opus_access_org_member
 from fastapi import (
     APIRouter,
     Depends,
@@ -68,26 +68,28 @@ AVAILABLE_MODELS = [
 ]
 
 
-async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
-    """403 if a non-``huggingface``-org user tries to select an Anthropic model.
+async def _require_opus_org_for_anthropic(request: Request, model_id: str) -> None:
+    """403 if the caller isn't in the Opus-access org (default
+    ``ml-agent-explorers``) but tries to select an Anthropic model.
 
     Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; every
     other model in ``AVAILABLE_MODELS`` is routed through HF Router and
     billed via ``X-HF-Bill-To``. The gate only fires for ``anthropic/*`` so
-    non-HF users can still freely switch between the free models.
+    non-members can still freely switch between the free models.
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
     """
     if not model_id.startswith("anthropic/"):
         return
-    if not await require_huggingface_org_member(request):
+    if not await require_opus_access_org_member(request):
         raise HTTPException(
             status_code=403,
             detail={
                 "error": "anthropic_restricted",
                 "message": (
-                    "Opus is gated to HF staff. Pick a free model — "
-                    "Kimi K2.6, MiniMax M2.7, or GLM 5.1 — instead."
+                    "Opus is gated to ml-agent-explorers members. Join the "
+                    "org on huggingface.co/ml-agent-explorers, or pick a "
+                    "free model — Kimi K2.6, MiniMax M2.7, or GLM 5.1."
                 ),
             },
         )
@@ -309,10 +311,11 @@ async def create_session(
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
-    # Opus is gated to HF staff (PR #63). Only fires when the resolved model
-    # is Anthropic; free models pass through.
+    # Opus is gated to ml-agent-explorers members (see OPUS_ACCESS_ORG in
+    # dependencies.py). Only fires when the resolved model is Anthropic;
+    # free models pass through.
     resolved_model = model or session_manager.config.model_name
-    await _require_hf_for_anthropic(request, resolved_model)
+    await _require_opus_org_for_anthropic(request, resolved_model)
 
     try:
         session_id = await session_manager.create_session(
@@ -355,7 +358,7 @@ async def restore_session_summary(
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
     resolved_model = model or session_manager.config.model_name
-    await _require_hf_for_anthropic(request, resolved_model)
+    await _require_opus_org_for_anthropic(request, resolved_model)
 
     try:
         session_id = await session_manager.create_session(
@@ -402,8 +405,9 @@ async def set_session_model(
     (including other browser tabs) are unaffected. Model switches don't
     charge quota — the Claude-quota gate only fires at message-submit time.
 
-    Switching TO an Anthropic model requires HF org membership (PR #63);
-    free-model switches are unrestricted.
+    Switching TO an Anthropic model requires OPUS_ACCESS_ORG membership
+    (default ml-agent-explorers, pattern from PR #63); free-model switches
+    are unrestricted.
     """
     _check_session_access(session_id, user)
     model_id = body.get("model")
@@ -412,7 +416,7 @@ async def set_session_model(
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
     if model_id not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
-    await _require_hf_for_anthropic(request, model_id)
+    await _require_opus_org_for_anthropic(request, model_id)
     agent_session = session_manager.sessions.get(session_id)
     if not agent_session:
         raise HTTPException(status_code=404, detail="Session not found")
