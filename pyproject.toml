@@ -20,6 +20,7 @@ dependencies = [
     "nbconvert>=7.16.6",
     "nbformat>=5.10.4",
     "whoosh>=2.7.4",
+    "boto3>=1.35.0",
     # Web backend dependencies
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",

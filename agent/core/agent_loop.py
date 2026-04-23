@@ -197,6 +197,8 @@ def _friendly_error_message(error: Exception) -> str | None:
             "Authentication failed — your API key is missing or invalid.\n\n"
             "To fix this, set the API key for your model provider:\n"
             "  • Anthropic:   export ANTHROPIC_API_KEY=sk-...\n"
+            "  • Bedrock:     export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION_NAME=...\n"
+            "                 (or AWS_BEARER_TOKEN_BEDROCK for SSO / identity-center auth)\n"
             "  • OpenAI:      export OPENAI_API_KEY=sk-...\n"
             "  • HF Router:   export HF_TOKEN=hf_...\n\n"
             "You can also add it to a .env file in the project root.\n"

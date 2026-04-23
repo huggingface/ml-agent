@@ -26,7 +26,10 @@ ml-intern
 Create a `.env` file in the project root (or export these in your shell):
 
 ```bash
-ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
+ANTHROPIC_API_KEY=<your-anthropic-api-key>     # if using anthropic/ models
+AWS_REGION_NAME=us-east-1                       # if using bedrock/ models
+AWS_ACCESS_KEY_ID=<key>                         # (or AWS_BEARER_TOKEN_BEDROCK for SSO)
+AWS_SECRET_ACCESS_KEY=<secret>                  #
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
@@ -50,6 +53,7 @@ ml-intern "fine-tune llama on my dataset"
 
 ```bash
 ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+ml-intern --model bedrock/us.anthropic.claude-opus-4-6-v1 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```

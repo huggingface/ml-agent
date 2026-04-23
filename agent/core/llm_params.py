@@ -84,6 +84,28 @@ class UnsupportedEffortError(ValueError):
     """
 
 
+def _resolve_anthropic_effort(
+    params: dict, reasoning_effort: str | None, strict: bool,
+) -> dict:
+    """Apply Anthropic-family thinking config to ``params`` (shared by
+    ``anthropic/`` and ``bedrock/`` paths — same Claude models, same API
+    shape for thinking/effort).
+    """
+    if reasoning_effort:
+        level = reasoning_effort
+        if level == "minimal":
+            level = "low"
+        if level not in _ANTHROPIC_EFFORTS:
+            if strict:
+                raise UnsupportedEffortError(
+                    f"Anthropic doesn't accept effort={level!r}"
+                )
+        else:
+            params["thinking"] = {"type": "adaptive"}
+            params["output_config"] = {"effort": level}
+    return params
+
+
 def _resolve_llm_params(
     model_name: str,
     session_hf_token: str | None = None,
@@ -105,6 +127,12 @@ def _resolve_llm_params(
       extended-thinking models that only accept ``thinking.type.enabled``
       will reject this; the probe's cascade catches that and falls back
       to no thinking.
+
+    • ``bedrock/<model>`` — same Claude models via Amazon Bedrock. LiteLLM
+      handles the AWS auth (via ``AWS_ACCESS_KEY_ID`` /
+      ``AWS_SECRET_ACCESS_KEY`` / ``AWS_REGION_NAME``, or
+      ``AWS_BEARER_TOKEN_BEDROCK`` for SSO / identity-center auth). The
+      thinking / effort params are identical to the ``anthropic/`` path.
 
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
@@ -132,27 +160,10 @@ def _resolve_llm_params(
       3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
     """
     if model_name.startswith("anthropic/"):
-        params: dict = {"model": model_name}
-        if reasoning_effort:
-            level = reasoning_effort
-            if level == "minimal":
-                level = "low"
-            if level not in _ANTHROPIC_EFFORTS:
-                if strict:
-                    raise UnsupportedEffortError(
-                        f"Anthropic doesn't accept effort={level!r}"
-                    )
-            else:
-                # Adaptive thinking + output_config.effort is the stable
-                # Anthropic API for Claude 4.6 / 4.7. Both kwargs are
-                # passed top-level: LiteLLM forwards unknown params into
-                # the request body for Anthropic, so ``output_config``
-                # reaches the API. ``extra_body`` does NOT work here —
-                # Anthropic rejects it as "Extra inputs are not
-                # permitted".
-                params["thinking"] = {"type": "adaptive"}
-                params["output_config"] = {"effort": level}
-        return params
+        return _resolve_anthropic_effort({"model": model_name}, reasoning_effort, strict)
+
+    if model_name.startswith("bedrock/"):
+        return _resolve_anthropic_effort({"model": model_name}, reasoning_effort, strict)
 
     if model_name.startswith("openai/"):
         params = {"model": model_name}
