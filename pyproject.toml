@@ -50,6 +50,7 @@ all = [
 
 [project.scripts]
 ml-intern = "agent.main:cli"
+ml-intern-mcp = "agent.mcp_server:main"
 
 [build-system]
 requires = ["setuptools>=64"]
