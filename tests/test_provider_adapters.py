@@ -130,6 +130,7 @@ def test_model_validation_accepts_free_form_hf_ids():
 def test_model_validation_accepts_direct_provider_ids():
     assert is_valid_model_name("anthropic/claude-opus-4-7") is True
     assert is_valid_model_name("openai/gpt-5") is True
+    assert is_valid_model_name("bedrock/us.anthropic.claude-opus-4-7") is True
 
 
 def test_model_validation_rejects_garbage():
@@ -146,6 +147,14 @@ def test_cli_validation_matches_provider_validation():
     assert is_valid_model_id("moonshotai/Kimi-K2.6:fastest") is True
     assert is_valid_model_id("openai/") is False
     assert is_valid_model_id("anthropic/") is False
+
+
+def test_resolve_raises_on_no_adapter(monkeypatch):
+    from agent.core import llm_params
+
+    monkeypatch.setattr(llm_params, "resolve_adapter", lambda _: None)
+    with pytest.raises(ValueError, match="No provider adapter"):
+        _resolve_llm_params("anything")
 
 
 def test_unsupported_effort_reexport():

@@ -70,6 +70,8 @@ def _resolve_llm_params(
       3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
     """
     adapter = resolve_adapter(model_name)
+    if adapter is None:
+        raise ValueError(f"No provider adapter for model: {model_name}")
     return adapter.build_params(
         model_name,
         session_hf_token=session_hf_token,
