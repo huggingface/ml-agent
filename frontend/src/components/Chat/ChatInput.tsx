@@ -160,6 +160,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   const [selectedModelId, setSelectedModelId] = useState<string>(DEFAULT_MODEL_OPTIONS[0].id);
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
   const [customModelPath, setCustomModelPath] = useState('');
+  const [customModelError, setCustomModelError] = useState('');
   const { quota, refresh: refreshQuota } = useUserQuota();
   // The daily-cap dialog is triggered from two places: (a) a 429 returned
   // from the chat transport when the user tries to send on Opus over cap —
@@ -283,21 +284,36 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   const handleUseCustomModel = async () => {
     const path = customModelPath.trim();
     if (!path || !sessionId) return;
+    setCustomModelError('');
     const model = customLocalModelOption(path);
     try {
       const res = await apiFetch(`/api/session/${sessionId}/model`, {
         method: 'POST',
         body: JSON.stringify({ model: model.modelPath }),
       });
-      if (res.ok) {
-        setModelOptions((prev) => (
-          findModelByPath(prev, model.modelPath) ? prev : [...prev, model]
-        ));
-        setSelectedModelId(model.id);
-        setCustomModelPath('');
-        handleModelClose();
+      if (!res.ok) {
+        let message = `Unable to use ${path}`;
+        try {
+          const data = await res.json();
+          if (typeof data?.detail === 'string') {
+            message = data.detail;
+          } else if (typeof data?.detail?.message === 'string') {
+            message = data.detail.message;
+          }
+        } catch { /* keep fallback */ }
+        setCustomModelError(message);
+        return;
       }
-    } catch { /* ignore */ }
+      setModelOptions((prev) => (
+        findModelByPath(prev, model.modelPath) ? prev : [...prev, model]
+      ));
+      setSelectedModelId(model.id);
+      setCustomModelPath('');
+      setCustomModelError('');
+      handleModelClose();
+    } catch {
+      setCustomModelError('Unable to switch to that local model.');
+    }
   };
 
   // Dialog close: just clear the flag. The typed text is already restored.
@@ -614,7 +630,10 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
                   <TextField
                     size="small"
                     value={customModelPath}
-                    onChange={(e) => setCustomModelPath(e.target.value)}
+                    onChange={(e) => {
+                      setCustomModelPath(e.target.value);
+                      setCustomModelError('');
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
@@ -624,6 +643,15 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
                     placeholder="ollama/qwen2.5-coder"
                     fullWidth
                     variant="outlined"
+                    error={!!customModelError}
+                    helperText={customModelError || ' '}
+                    FormHelperTextProps={{
+                      sx: {
+                        mx: 0,
+                        color: customModelError ? 'var(--accent-red)' : 'transparent',
+                        fontSize: '11px',
+                      },
+                    }}
                     sx={{
                       '& .MuiInputBase-root': {
                         color: 'var(--text)',

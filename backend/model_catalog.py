@@ -3,7 +3,7 @@
 import os
 from typing import Any
 
-LOCAL_MODEL_PREFIXES = ("ollama/", "vllm/", "llamacpp/", "local://")
+from ml_intern.local_models import is_local_model_id
 
 
 def local_models_enabled() -> bool:
@@ -86,11 +86,12 @@ def is_custom_local_model_id(model_id: str) -> bool:
         char.isspace() for char in model_id
     ):
         return False
-    return any(
-        model_id.startswith(prefix) and len(model_id) > len(prefix)
-        for prefix in LOCAL_MODEL_PREFIXES
-    )
+    return is_local_model_id(model_id)
 
 
 def is_valid_model_id(model_id: str) -> bool:
     return model_id in available_model_ids() or is_custom_local_model_id(model_id)
+
+
+def is_anthropic_model(model_id: str) -> bool:
+    return model_id.startswith(("anthropic/", "bedrock/")) and "anthropic" in model_id

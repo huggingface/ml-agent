@@ -32,3 +32,10 @@ def test_custom_local_model_ids_reject_empty_or_whitespace(monkeypatch):
     assert not model_catalog.is_valid_model_id(" ollama/qwen")
     assert not model_catalog.is_valid_model_id("ollama/qwen coder")
     assert not model_catalog.is_valid_model_id("some-org/model")
+
+
+def test_anthropic_detection_is_anchored_to_cloud_prefixes():
+    assert model_catalog.is_anthropic_model("anthropic/claude-opus-4-6")
+    assert model_catalog.is_anthropic_model("bedrock/us.anthropic.claude-opus-4-6-v1")
+    assert not model_catalog.is_anthropic_model("local://my-anthropic-wrapper")
+    assert not model_catalog.is_anthropic_model("ollama/anthropic-clone")

@@ -16,6 +16,7 @@ glues it to CLI output + session state.
 from __future__ import annotations
 
 from agent.core.effort_probe import ProbeInconclusive, probe_effort
+from ml_intern.local_models import LOCAL_MODEL_PREFIXES, is_local_model_id
 
 
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
@@ -36,7 +37,6 @@ SUGGESTED_MODELS = [
 
 
 _ROUTING_POLICIES = {"fastest", "cheapest", "preferred"}
-_LOCAL_MODEL_PREFIXES = ("ollama/", "vllm/", "llamacpp/", "local://")
 
 
 def is_valid_model_id(model_id: str) -> bool:
@@ -54,10 +54,7 @@ def is_valid_model_id(model_id: str) -> bool:
     """
     if not model_id:
         return False
-    if any(
-        model_id.startswith(prefix) and len(model_id) > len(prefix)
-        for prefix in _LOCAL_MODEL_PREFIXES
-    ):
+    if is_local_model_id(model_id):
         return True
     if "/" not in model_id:
         return False
@@ -75,7 +72,7 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     Anthropic / OpenAI ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/", *_LOCAL_MODEL_PREFIXES)):
+    if model_id.startswith(("anthropic/", "openai/", *LOCAL_MODEL_PREFIXES)):
         return True
 
     from agent.core import hf_router_catalog as cat

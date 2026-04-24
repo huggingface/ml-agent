@@ -150,10 +150,6 @@ def test_resolve_generic_local_params_trims_trailing_slash(monkeypatch):
     assert params["api_base"] == "http://127.0.0.1:9000/v1"
 
 
-def test_local_reasoning_effort_rejected_in_strict_mode():
-    with pytest.raises(UnsupportedEffortError, match="Local OpenAI-compatible endpoints"):
-        _resolve_llm_params(
-            "ollama/llama3.1",
-            reasoning_effort="high",
-            strict=True,
-        )
+def test_local_params_reject_reasoning_effort_in_strict_mode():
+    with pytest.raises(UnsupportedEffortError, match="reasoning_effort"):
+        _resolve_llm_params("ollama/llama3.1", reasoning_effort="high", strict=True)
