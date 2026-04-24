@@ -25,17 +25,13 @@ def _patch_litellm_effort_validation() -> None:
 
     def _widened(model: str) -> bool:
         m = model.lower()
+        # Original 4.6 match plus any future Opus >= 4.6. We only need this
+        # to return True for families where "max" / "xhigh" are acceptable
+        # at the API; the cascade handles the case when they're not.
         return any(
-            v in m
-            for v in (
-                "opus-4-6",
-                "opus_4_6",
-                "opus-4.6",
-                "opus_4.6",
-                "opus-4-7",
-                "opus_4_7",
-                "opus-4.7",
-                "opus_4.7",
+            v in m for v in (
+                "opus-4-6", "opus_4_6", "opus-4.6", "opus_4.6",
+                "opus-4-7", "opus_4_7", "opus-4.7", "opus_4.7",
             )
         )
 
@@ -70,6 +66,8 @@ def _resolve_llm_params(
       3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
     """
     adapter = resolve_adapter(model_name)
+    if adapter is None:
+        raise ValueError(f"No provider adapter for model: {model_name}")
     return adapter.build_params(
         model_name,
         session_hf_token=session_hf_token,

@@ -267,6 +267,30 @@ class OpenAIAdapter(ProviderAdapter):
 
 
 @dataclass(frozen=True)
+class BedrockAdapter(ProviderAdapter):
+    """AWS Bedrock models via LiteLLM Converse adapter.
+
+    Picks up AWS credentials from standard env vars.
+    Thinking/effort not forwarded through Converse for now.
+    """
+
+    prefixes: tuple[str, ...] = ("bedrock/",)
+
+    def allows_model_name(self, model_name: str) -> bool:
+        return _has_model_suffix(model_name, "bedrock/")
+
+    def build_params(
+        self,
+        model_name: str,
+        *,
+        session_hf_token: str | None = None,
+        reasoning_effort: str | None = None,
+        strict: bool = False,
+    ) -> dict:
+        return {"model": model_name}
+
+
+@dataclass(frozen=True)
 class OpenAICompatAdapter(ProviderAdapter):
     api_base_url: str = ""
     api_key_env: str = ""
@@ -538,6 +562,7 @@ class HfRouterAdapter(ProviderAdapter):
 
 ADAPTERS: tuple[ProviderAdapter, ...] = (
     AnthropicAdapter(provider_id="anthropic", provider_label="Anthropic"),
+    BedrockAdapter(provider_id="bedrock", provider_label="AWS Bedrock"),
     OpenAIAdapter(provider_id="openai", provider_label="OpenAI"),
     OllamaAdapter(provider_id="ollama", provider_label="Ollama"),
     LmStudioAdapter(provider_id="lm_studio", provider_label="LM Studio"),
@@ -549,7 +574,7 @@ ADAPTERS: tuple[ProviderAdapter, ...] = (
         provider_id="openai_compat",
         provider_label="OpenAI-Compatible",
     ),
-    HfRouterAdapter(provider_id="huggingface", provider_label="Hugging Face Router"),
+    HfRouterAdapter(provider_id="huggingface", provider_label="Hugging Face Router")
 )
 
 

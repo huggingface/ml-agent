@@ -65,6 +65,26 @@ def test_openai_adapter_strict_rejects_max():
         _resolve_llm_params("openai/gpt-5", reasoning_effort="max", strict=True)
 
 
+# -- Bedrock adapter ----------------------------------------------------------
+
+
+def test_bedrock_adapter_returns_model_only():
+    params = _resolve_llm_params("bedrock/us.anthropic.claude-opus-4-7")
+    assert params == {"model": "bedrock/us.anthropic.claude-opus-4-7"}
+
+
+def test_bedrock_adapter_ignores_effort():
+    params = _resolve_llm_params(
+        "bedrock/us.anthropic.claude-opus-4-6-v1", reasoning_effort="high"
+    )
+    assert params == {"model": "bedrock/us.anthropic.claude-opus-4-6-v1"}
+
+
+def test_bedrock_validation():
+    assert is_valid_model_name("bedrock/us.anthropic.claude-opus-4-7") is True
+    assert is_valid_model_name("bedrock/") is False
+
+
 # -- HF Router adapter --------------------------------------------------------
 
 
@@ -225,6 +245,7 @@ def test_model_validation_accepts_free_form_hf_ids():
 def test_model_validation_accepts_direct_provider_ids():
     assert is_valid_model_name("anthropic/claude-opus-4-7") is True
     assert is_valid_model_name("openai/gpt-5") is True
+    assert is_valid_model_name("bedrock/us.anthropic.claude-opus-4-7") is True
     assert is_valid_model_name("ollama/llama3.1") is True
     assert is_valid_model_name("lm_studio/google/gemma-3-12b") is True
     assert is_valid_model_name("vllm/Qwen3-32B") is True
@@ -320,6 +341,14 @@ def test_cli_validation_matches_provider_validation():
     assert is_valid_model_id("openai-compat/my-model") is True
     assert is_valid_model_id("openai/") is False
     assert is_valid_model_id("anthropic/") is False
+
+
+def test_resolve_raises_on_no_adapter(monkeypatch):
+    from agent.core import llm_params
+
+    monkeypatch.setattr(llm_params, "resolve_adapter", lambda _: None)
+    with pytest.raises(ValueError, match="No provider adapter"):
+        _resolve_llm_params("anything")
 
 
 def test_unsupported_effort_reexport():

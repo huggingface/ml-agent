@@ -28,12 +28,7 @@ from models import (
     SubmitRequest,
     TruncateRequest,
 )
-from session_manager import (
-    MAX_SESSIONS,
-    AgentSession,
-    SessionCapacityError,
-    session_manager,
-)
+from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, session_manager
 
 import user_quotas
 
@@ -46,6 +41,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["agent"])
 
 
+def _is_anthropic_model(model_id: str) -> bool:
+    return "anthropic" in model_id
+
+
 async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select an Anthropic model.
 
@@ -56,7 +55,7 @@ async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
     """
-    if not model_id.startswith("anthropic/"):
+    if not _is_anthropic_model(model_id):
         return
     if not await require_huggingface_org_member(request):
         raise HTTPException(
@@ -88,7 +87,7 @@ async def _enforce_claude_quota(
     if agent_session.claude_counted:
         return
     model_name = agent_session.session.config.model_name
-    if not model_name.startswith("anthropic/"):
+    if not _is_anthropic_model(model_name):
         return
     user_id = user["user_id"]
     used = await user_quotas.get_claude_used_today(user_id)
@@ -494,9 +493,7 @@ async def chat_sse(
             success = await session_manager.submit_user_input(session_id, text)
         else:
             broadcaster.unsubscribe(sub_id)
-            raise HTTPException(
-                status_code=400, detail="Must provide 'text' or 'approvals'"
-            )
+            raise HTTPException(status_code=400, detail="Must provide 'text' or 'approvals'")
 
         if not success:
             broadcaster.unsubscribe(sub_id)
@@ -513,13 +510,7 @@ async def chat_sse(
 # ---------------------------------------------------------------------------
 # Shared SSE helpers
 # ---------------------------------------------------------------------------
-_TERMINAL_EVENTS = {
-    "turn_complete",
-    "approval_required",
-    "error",
-    "interrupted",
-    "shutdown",
-}
+_TERMINAL_EVENTS = {"turn_complete", "approval_required", "error", "interrupted", "shutdown"}
 _SSE_KEEPALIVE_SECONDS = 15
 
 
@@ -619,10 +610,7 @@ async def truncate_session(
     _check_session_access(session_id, user)
     success = await session_manager.truncate(session_id, body.user_message_index)
     if not success:
-        raise HTTPException(
-            status_code=404,
-            detail="Session not found, inactive, or message index out of range",
-        )
+        raise HTTPException(status_code=404, detail="Session not found, inactive, or message index out of range")
     return {"status": "truncated", "session_id": session_id}
 
 
@@ -648,3 +636,5 @@ async def shutdown_session(
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
     return {"status": "shutdown_requested", "session_id": session_id}
+
+
