@@ -16,6 +16,13 @@ from agent.eval.registry import get_task
 from agent.eval.runner import evaluate_model, load_examples
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("limit must be a positive integer")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate a baseline model against a candidate model.",
@@ -24,7 +31,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--baseline-model", required=True)
     parser.add_argument("--candidate-model", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--limit", type=positive_int, default=None)
     parser.add_argument("--split", default=None)
     parser.add_argument("--cost-file", default=None)
     parser.add_argument("--notes", default=None)
@@ -41,7 +48,10 @@ def load_cost_metadata(path: str | None) -> tuple[float | None, float | None]:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     task = get_task(args.task)
+    training_cost, eval_cost = load_cost_metadata(args.cost_file)
     examples = load_examples(task, split=args.split, limit=args.limit)
+    if not examples:
+        raise ValueError("No evaluation examples loaded")
 
     baseline = evaluate_model(task, args.baseline_model, examples)
     candidate = evaluate_model(task, args.candidate_model, examples)
@@ -52,7 +62,6 @@ def main(argv: list[str] | None = None) -> int:
         baseline=baseline,
         candidate=candidate,
     )
-    training_cost, eval_cost = load_cost_metadata(args.cost_file)
     output_dir = Path(args.output_dir)
     run_record = build_run_record(
         run_id=str(uuid.uuid4()),

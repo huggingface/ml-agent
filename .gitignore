@@ -54,6 +54,7 @@ frontend/yarn-error.log*
 
 # Eval (stale)
 /eval/
+/eval_runs/
 
 # Project-specific
 session_logs/
