@@ -113,12 +113,14 @@ async def summarize_messages(
     Returns ``(summary_text, completion_tokens)``.
     """
     from agent.core.llm_params import _resolve_llm_params
+    from agent.core import rate_limiter
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
     llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )
+    await rate_limiter.acquire(model_name)
     response = await acompletion(
         messages=prompt_messages,
         max_completion_tokens=max_tokens,
