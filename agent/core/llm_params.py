@@ -8,6 +8,22 @@ creating circular imports.
 import os
 
 
+def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
+    token = (
+        os.environ.get("INFERENCE_TOKEN")
+        or session_hf_token
+        or os.environ.get("HF_TOKEN")
+    )
+    if token:
+        return token
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:
+        return None
+
+
 def _patch_litellm_effort_validation() -> None:
     """Neuter LiteLLM 1.83's hardcoded effort-level validation.
 
@@ -130,6 +146,7 @@ def _resolve_llm_params(
          free for users, billed to the Space owner via ``X-HF-Bill-To``).
       2. session.hf_token — the user's own token (CLI / OAuth / cache file).
       3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
+      4. huggingface_hub local cache (``hf auth login``).
     """
     if model_name.startswith("anthropic/"):
         params: dict = {"model": model_name}
@@ -175,11 +192,7 @@ def _resolve_llm_params(
         return params
 
     hf_model = model_name.removeprefix("huggingface/")
-    api_key = (
-        os.environ.get("INFERENCE_TOKEN")
-        or session_hf_token
-        or os.environ.get("HF_TOKEN")
-    )
+    api_key = _resolve_hf_router_token(session_hf_token)
     params = {
         "model": f"openai/{hf_model}",
         "api_base": "https://router.huggingface.co/v1",
