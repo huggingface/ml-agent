@@ -11,6 +11,7 @@ Provides pluggable notification providers:
 """
 
 import asyncio
+import httpx
 import logging
 import platform
 import smtplib
@@ -58,6 +59,10 @@ class EmailProvider(NotificationProviderBase):
             email_to = self.config.get("email_to")
             email_from = self.config.get("email_from", smtp_user)
 
+            # Unwrap SecretStr if needed
+            if hasattr(smtp_password, "get_secret_value"):
+                smtp_password = smtp_password.get_secret_value()
+
             if not all([smtp_host, smtp_user, smtp_password, email_to]):
                 logger.warning("Email provider: incomplete config, skipping notification")
                 return False
@@ -92,14 +97,16 @@ class PushbulletProvider(NotificationProviderBase):
     async def send(self, event_type: str, title: str, message: str, metadata: dict[str, Any] | None = None) -> bool:
         try:
             api_key = self.config.get("pushbullet_api_key")
-            if not api_key:
+            if api_key is None:
                 logger.warning("Pushbullet provider: no API key configured")
                 return False
 
-            import aiohttp
+            # Unwrap SecretStr if needed
+            if hasattr(api_key, "get_secret_value"):
+                api_key = api_key.get_secret_value()
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
                     "https://api.pushbullet.com/v2/pushes",
                     headers={"Access-Token": api_key},
                     json={
@@ -107,14 +114,13 @@ class PushbulletProvider(NotificationProviderBase):
                         "title": f"[ML Intern] {title}",
                         "body": message,
                     },
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 200:
-                        logger.info("Pushbullet notification sent successfully")
-                        return True
-                    else:
-                        logger.error(f"Pushbullet API error: {resp.status}")
-                        return False
+                )
+                if resp.status_code == 200:
+                    logger.info("Pushbullet notification sent successfully")
+                    return True
+                else:
+                    logger.error(f"Pushbullet API error: {resp.status_code}")
+                    return False
         except Exception as e:
             logger.error(f"Failed to send Pushbullet notification: {e}")
             return False
@@ -132,28 +138,29 @@ class TelegramProvider(NotificationProviderBase):
                 logger.warning("Telegram provider: incomplete config")
                 return False
 
-            import aiohttp
+            # Unwrap SecretStr if needed
+            if hasattr(bot_token, "get_secret_value"):
+                bot_token = bot_token.get_secret_value()
 
             text = f"*[ML Intern] {title}*\n\n{message}"
             if metadata:
                 text += f"\n\nMetadata: {metadata}"
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
                     f"https://api.telegram.org/bot{bot_token}/sendMessage",
                     json={
                         "chat_id": chat_id,
                         "text": text,
                         "parse_mode": "Markdown",
                     },
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 200:
-                        logger.info("Telegram notification sent successfully")
-                        return True
-                    else:
-                        logger.error(f"Telegram API error: {resp.status}")
-                        return False
+                )
+                if resp.status_code == 200:
+                    logger.info("Telegram notification sent successfully")
+                    return True
+                else:
+                    logger.error(f"Telegram API error: {resp.status_code}")
+                    return False
         except Exception as e:
             logger.error(f"Failed to send Telegram notification: {e}")
             return False
@@ -169,24 +176,21 @@ class SlackProvider(NotificationProviderBase):
                 logger.warning("Slack provider: no webhook URL configured")
                 return False
 
-            import aiohttp
-
             text = f"*[ML Intern] {title}*\n>{message}"
             if metadata:
                 text += f"\n```json\n{metadata}\n```"
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
                     webhook_url,
                     json={"text": text},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 200:
-                        logger.info("Slack notification sent successfully")
-                        return True
-                    else:
-                        logger.error(f"Slack webhook error: {resp.status}")
-                        return False
+                )
+                if resp.status_code == 200:
+                    logger.info("Slack notification sent successfully")
+                    return True
+                else:
+                    logger.error(f"Slack webhook error: {resp.status_code}")
+                    return False
         except Exception as e:
             logger.error(f"Failed to send Slack notification: {e}")
             return False
@@ -202,8 +206,6 @@ class DiscordProvider(NotificationProviderBase):
                 logger.warning("Discord provider: no webhook URL configured")
                 return False
 
-            import aiohttp
-
             embed = {
                 "title": f"[ML Intern] {title}",
                 "description": message,
@@ -215,18 +217,17 @@ class DiscordProvider(NotificationProviderBase):
                     for key, value in metadata.items()
                 ]
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
                     webhook_url,
                     json={"embeds": [embed]},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status == 200 or resp.status == 204:
-                        logger.info("Discord notification sent successfully")
-                        return True
-                    else:
-                        logger.error(f"Discord webhook error: {resp.status}")
-                        return False
+                )
+                if resp.status_code == 200 or resp.status_code == 204:
+                    logger.info("Discord notification sent successfully")
+                    return True
+                else:
+                    logger.error(f"Discord webhook error: {resp.status_code}")
+                    return False
         except Exception as e:
             logger.error(f"Failed to send Discord notification: {e}")
             return False
@@ -242,7 +243,10 @@ class SystemProvider(NotificationProviderBase):
             if system == "Darwin":  # macOS
                 import subprocess
 
-                script = f'display notification "{message}" with title "[ML Intern] {title}"'
+                # Escape special characters to prevent command injection
+                safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
+                safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+                script = f'display notification "{safe_msg}" with title "[ML Intern] {safe_title}"'
                 await asyncio.to_thread(
                     subprocess.run, ["osascript", "-e", script], check=False, capture_output=True
                 )
@@ -252,6 +256,9 @@ class SystemProvider(NotificationProviderBase):
                 # Use PowerShell for Windows notifications
                 import subprocess
 
+                # Escape double-quotes to prevent PowerShell injection
+                safe_title = title.replace('"', '`"').replace("'", "''")
+                safe_msg = message.replace('"', '`"').replace("'", "''")
                 await asyncio.to_thread(
                     subprocess.run,
                     [
@@ -259,8 +266,8 @@ class SystemProvider(NotificationProviderBase):
                         "-Command",
                         f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; '
                         f'$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); '
-                        f'$template.GetElementsByTagName("text")[0].AppendChild($template.CreateTextNode("[ML Intern] {title}")) | Out-Null; '
-                        f'$template.GetElementsByTagName("text")[1].AppendChild($template.CreateTextNode("{message}")) | Out-Null; '
+                        f'$template.GetElementsByTagName("text")[0].AppendChild($template.CreateTextNode("[ML Intern] {safe_title}")) | Out-Null; '
+                        f'$template.GetElementsByTagName("text")[1].AppendChild($template.CreateTextNode("{safe_msg}")) | Out-Null; '
                         f'$toast = [Windows.UI.Notifications.ToastNotification]::new($template); '
                         f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("ML Intern").Show($toast)',
                     ],

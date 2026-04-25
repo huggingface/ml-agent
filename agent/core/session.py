@@ -299,7 +299,11 @@ class Session:
 
             # Notify session saved
             if self.notification_service:
-                asyncio.create_task(self.notify_session_saved(repo_id))
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self.notify_session_saved(repo_id))
+                except RuntimeError:
+                    pass  # no running loop — skip notification
         except Exception as e:
             logger.warning(f"Failed to spawn upload subprocess: {e}")
 

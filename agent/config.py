@@ -12,7 +12,7 @@ from fastmcp.mcp_config import (
     RemoteMCPServer,
     StdioMCPServer,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 # These two are the canonical server config types for MCP servers.
 MCPServerConfig = Union[StdioMCPServer, RemoteMCPServer]
@@ -37,11 +37,11 @@ class NotificationProvider(BaseModel):
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None
-    smtp_password: str | None = None
+    smtp_password: SecretStr | None = None
     # Pushbullet config
-    pushbullet_api_key: str | None = None
+    pushbullet_api_key: SecretStr | None = None
     # Telegram config
-    telegram_bot_token: str | None = None
+    telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
     # Slack config
     slack_webhook_url: str | None = None
