@@ -38,6 +38,60 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
+GOOGLE_AI_STUDIO_MODELS = [
+    {
+        "id": "google/gemini-3.1-pro-preview",
+        "label": "Gemini 3.1 Pro Preview",
+        "recommended": True,
+    },
+    {
+        "id": "google/gemini-3-flash-preview",
+        "label": "Gemini 3 Flash Preview",
+    },
+    {
+        "id": "google/gemini-3.1-flash-lite-preview",
+        "label": "Gemini 3.1 Flash Lite Preview",
+    },
+    {
+        "id": "google/gemini-3-pro-preview",
+        "label": "Gemini 3 Pro Preview",
+    },
+    {"id": "google/gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
+    {"id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+    {
+        "id": "google/gemini-2.5-flash-preview-09-2025",
+        "label": "Gemini 2.5 Flash Preview",
+    },
+    {
+        "id": "google/gemini-2.5-flash-lite-preview-09-2025",
+        "label": "Gemini 2.5 Flash Lite Preview",
+    },
+]
+
+VERTEX_AI_MODELS = [
+    {
+        "id": "google-geap/gemini-3.1-pro-preview",
+        "label": "Gemini 3.1 Pro Preview via Vertex AI",
+    },
+    {
+        "id": "google-geap/gemini-3-flash-preview",
+        "label": "Gemini 3 Flash Preview via Vertex AI",
+    },
+    {
+        "id": "google-geap/gemini-3.1-flash-lite-preview",
+        "label": "Gemini 3.1 Flash Lite Preview via Vertex AI",
+    },
+    {
+        "id": "google-geap/gemini-3-pro-preview",
+        "label": "Gemini 3 Pro Preview via Vertex AI",
+    },
+    {"id": "google-geap/gemini-2.5-pro", "label": "Gemini 2.5 Pro via Vertex AI"},
+    {
+        "id": "google-geap/gemini-2.5-flash",
+        "label": "Gemini 2.5 Flash via Vertex AI",
+    },
+]
+
 AVAILABLE_MODELS = [
     {
         "id": "moonshotai/Kimi-K2.6",
@@ -53,6 +107,14 @@ AVAILABLE_MODELS = [
         "tier": "pro",
         "recommended": True,
     },
+    *[
+        {"provider": "gemini", "tier": "direct", **model}
+        for model in GOOGLE_AI_STUDIO_MODELS
+    ],
+    *[
+        {"provider": "vertex_ai", "tier": "direct", **model}
+        for model in VERTEX_AI_MODELS
+    ],
     {
         "id": "MiniMaxAI/MiniMax-M2.7",
         "label": "MiniMax M2.7",
@@ -66,6 +128,29 @@ AVAILABLE_MODELS = [
         "tier": "free",
     },
 ]
+
+
+AVAILABLE_MODEL_IDS = {m["id"] for m in AVAILABLE_MODELS}
+GOOGLE_DIRECT_PROVIDER_PREFIXES = ("google/", "google-geap/")
+GOOGLE_DIRECT_MODEL_FAMILIES = ("gemini", "gemma")
+
+
+def _is_known_or_direct_model(model_id: object) -> bool:
+    """Accept curated UI models plus direct Google LiteLLM provider model ids.
+
+    The browser selector is intentionally curated, but direct-provider users
+    should not be blocked from newer Google AI Studio / Vertex AI preview
+    models by this server-side list.
+    """
+    if not isinstance(model_id, str):
+        return False
+    if model_id in AVAILABLE_MODEL_IDS:
+        return True
+    for prefix in GOOGLE_DIRECT_PROVIDER_PREFIXES:
+        if model_id.startswith(prefix):
+            model_name = model_id.removeprefix(prefix)
+            return model_name.startswith(GOOGLE_DIRECT_MODEL_FAMILIES)
+    return False
 
 
 def _is_anthropic_model(model_id: str) -> bool:
@@ -309,8 +394,7 @@ async def create_session(
     if isinstance(body, dict):
         model = body.get("model")
 
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
-    if model and model not in valid_ids:
+    if model and not _is_known_or_direct_model(model):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
     # Opus is gated to HF staff (PR #63). Only fires when the resolved model
@@ -354,8 +438,7 @@ async def restore_session_summary(
         hf_token = os.environ.get("HF_TOKEN")
 
     model = body.get("model")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
-    if model and model not in valid_ids:
+    if model and not _is_known_or_direct_model(model):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
     resolved_model = model or session_manager.config.model_name
@@ -413,8 +496,7 @@ async def set_session_model(
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="Missing 'model' field")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
-    if model_id not in valid_ids:
+    if not _is_known_or_direct_model(model_id):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
     await _require_hf_for_anthropic(request, model_id)
     agent_session = session_manager.sessions.get(session_id)
@@ -729,5 +811,3 @@ async def submit_feedback(
             agent_session.session.config.session_dataset_repo
         )
     return {"status": "ok"}
-
-
