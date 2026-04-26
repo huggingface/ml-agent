@@ -58,7 +58,14 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent*"]
+# `configs` ships the JSON files loaded by agent.main.CLI_CONFIG_PATH at
+# runtime (resolves to <site-packages>/configs/cli_agent_config.json).
+# Without it, `uv tool install` / `pip install` produce a broken install
+# that imports fine but crashes at startup with FileNotFoundError.
+include = ["agent*", "configs"]
+
+[tool.setuptools.package-data]
+configs = ["*.json"]
 
 [tool.uv]
 package = true
