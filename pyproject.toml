@@ -66,6 +66,12 @@ include = ["agent*", "configs"]
 
 [tool.setuptools.package-data]
 configs = ["*.json"]
+# Agent data files: system prompts loaded by ContextManager._load_system_prompt
+# at runtime (`<site-packages>/agent/prompts/system_prompt_v3.yaml`), plus the
+# package README. Without these, headless_main hangs forever — submission_loop
+# crashes with FileNotFoundError but headless_main doesn't check agent_task.done()
+# and just keeps awaiting the "ready" event_queue item that will never come.
+agent = ["README.md", "prompts/*.yaml"]
 
 [tool.uv]
 package = true
