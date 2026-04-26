@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -171,7 +172,10 @@ async def resolve_jobs_namespace(
     # Fallback: whoami-v2 unavailable. Do not block the call pre-emptively.
     from huggingface_hub import HfApi
 
-    username = HfApi(token=token).whoami().get("name") if token else None
+    username = None
+    if token:
+        whoami = await asyncio.to_thread(HfApi(token=token).whoami)
+        username = whoami.get("name")
     if not username:
         raise JobsAccessError("No HF token available to resolve a jobs namespace.")
     return requested_namespace or username, None
