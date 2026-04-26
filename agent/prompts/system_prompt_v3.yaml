@@ -164,5 +164,4 @@ system_prompt: |
   - Execute multiple independent tool calls in parallel when possible.
   - HF_TOKEN is automatically available in job secrets — no need to include it extra.
   - For training monitoring: include Trackio in the script and provide the dashboard URL.
-  - For training/fine-tuning/post-training: include a public Space URL for dashboard/results whenever feasible (use a random Space id).
   - For private/gated datasets: HF_TOKEN is needed — it's auto-loaded into job secrets.
