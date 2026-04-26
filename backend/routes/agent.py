@@ -213,9 +213,6 @@ async def _enforce_jobs_access_for_approvals(
             )
         return
 
-    if access.can_run_jobs:
-        return
-
     from agent.core import telemetry
     await telemetry.record_jobs_access_blocked(
         agent_session.session,
