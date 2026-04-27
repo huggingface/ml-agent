@@ -12,10 +12,13 @@ from typing import Any, Optional
 
 from agent.config import Config
 from agent.context_manager.manager import ContextManager
+from agent.messaging.gateway import NotificationGateway
+from agent.messaging.models import NotificationRequest
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 200_000
+_TURN_COMPLETE_NOTIFICATION_CHARS = 39000
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
@@ -73,18 +76,24 @@ class Session:
     def __init__(
         self,
         event_queue: asyncio.Queue,
-        config: Config | None = None,
+        config: Config,
         tool_router=None,
         context_manager: ContextManager | None = None,
         hf_token: str | None = None,
         local_mode: bool = False,
         stream: bool = True,
+        notification_gateway: NotificationGateway | None = None,
+        notification_destinations: list[str] | None = None,
+        defer_turn_complete_notification: bool = False,
+        session_id: str | None = None,
         user_id: str | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.user_id: Optional[str] = user_id
         self.tool_router = tool_router
         self.stream = stream
+        if config is None:
+            raise ValueError("Session requires a Config")
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
         self.context_manager = context_manager or ContextManager(
             model_max_tokens=_get_max_tokens_safe(config.model_name),
@@ -95,15 +104,16 @@ class Session:
             local_mode=local_mode,
         )
         self.event_queue = event_queue
-        self.session_id = str(uuid.uuid4())
-        self.config = config or Config(
-            model_name="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        )
+        self.session_id = session_id or str(uuid.uuid4())
+        self.config = config
         self.is_running = True
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
+        self.notification_gateway = notification_gateway
+        self.notification_destinations = list(notification_destinations or [])
+        self.defer_turn_complete_notification = defer_turn_complete_notification
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
@@ -138,10 +148,120 @@ class Session:
                 "data": event.data,
             }
         )
+        await self._enqueue_auto_notification_requests(event)
 
         # Mid-turn heartbeat flush (owned by telemetry module).
         from agent.core.telemetry import HeartbeatSaver
+
         HeartbeatSaver.maybe_fire(self)
+
+    def set_notification_destinations(self, destinations: list[str]) -> None:
+        """Replace the session's opted-in auto-notification destinations."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for destination in destinations:
+            if destination not in seen:
+                deduped.append(destination)
+                seen.add(destination)
+        self.notification_destinations = deduped
+
+    async def send_deferred_turn_complete_notification(self, event: Event) -> None:
+        if event.event_type != "turn_complete":
+            return
+        await self._enqueue_auto_notification_requests(
+            event,
+            include_deferred_turn_complete=True,
+        )
+
+    async def _enqueue_auto_notification_requests(
+        self,
+        event: Event,
+        include_deferred_turn_complete: bool = False,
+    ) -> None:
+        if self.notification_gateway is None:
+            return
+        if not self.notification_destinations:
+            return
+        auto_events = set(self.config.messaging.auto_event_types)
+        if event.event_type not in auto_events:
+            return
+        if (
+            self.defer_turn_complete_notification
+            and event.event_type == "turn_complete"
+            and not include_deferred_turn_complete
+        ):
+            return
+
+        requests = self._build_auto_notification_requests(event)
+        for request in requests:
+            await self.notification_gateway.enqueue(request)
+
+    def _build_auto_notification_requests(
+        self, event: Event
+    ) -> list[NotificationRequest]:
+        metadata = {
+            "session_id": self.session_id,
+            "model": self.config.model_name,
+            "event_type": event.event_type,
+        }
+
+        title: str | None = None
+        message: str | None = None
+        severity = "info"
+        data = event.data or {}
+        if event.event_type == "approval_required":
+            tools = data.get("tools", [])
+            tool_names = []
+            for tool in tools if isinstance(tools, list) else []:
+                if isinstance(tool, dict):
+                    tool_name = str(tool.get("tool") or "").strip()
+                    if tool_name and tool_name not in tool_names:
+                        tool_names.append(tool_name)
+            count = len(tools) if isinstance(tools, list) else 0
+            title = "Agent approval required"
+            message = (
+                f"Session {self.session_id} is waiting for approval "
+                f"for {count} tool call(s)."
+            )
+            if tool_names:
+                message += " Tools: " + ", ".join(tool_names)
+            severity = "warning"
+        elif event.event_type == "error":
+            title = "Agent error"
+            error = str(data.get("error") or "Unknown error")
+            message = f"Session {self.session_id} hit an error.\n{error[:500]}"
+            severity = "error"
+        elif event.event_type == "turn_complete":
+            title = "Agent task complete"
+            summary = str(data.get("final_response") or "").strip()
+            if summary:
+                summary = summary[:_TURN_COMPLETE_NOTIFICATION_CHARS]
+                message = (
+                    f"Session {self.session_id} completed successfully.\n"
+                    f"{summary}"
+                )
+            else:
+                message = f"Session {self.session_id} completed successfully."
+            severity = "success"
+
+        if message is None:
+            return []
+
+        requests: list[NotificationRequest] = []
+        for destination in self.notification_destinations:
+            if not self.config.messaging.can_auto_send(destination):
+                continue
+            requests.append(
+                NotificationRequest(
+                    destination=destination,
+                    title=title,
+                    message=message,
+                    severity=severity,
+                    metadata=metadata,
+                    event_type=event.event_type,
+                )
+            )
+        return requests
 
     def cancel(self) -> None:
         """Signal cancellation to the running agent loop."""

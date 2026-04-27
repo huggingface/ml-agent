@@ -26,6 +26,7 @@ from agent.core import model_switcher
 from agent.core.hf_tokens import resolve_hf_token
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
+from agent.messaging.gateway import NotificationGateway
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
@@ -332,6 +333,9 @@ async def event_listener(
                 stream_buf.discard()
                 print_turn_complete()
                 print_plan()
+                session = session_holder[0] if session_holder else None
+                if session is not None:
+                    await session.send_deferred_turn_complete_notification(event)
                 turn_complete_event.set()
             elif event.event_type == "interrupted":
                 shimmer.stop()
@@ -807,7 +811,7 @@ async def _handle_slash_command(
     return None
 
 
-async def main():
+async def main(model: str | None = None):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -821,7 +825,9 @@ async def main():
     if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
-    config = load_config(CLI_CONFIG_PATH)
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+    if model:
+        config.model_name = model
 
     # Resolve username for banner
     hf_user = _get_hf_user(hf_token)
@@ -842,6 +848,8 @@ async def main():
     turn_complete_event.set()
     ready_event = asyncio.Event()
 
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
 
@@ -859,6 +867,9 @@ async def main():
             user_id=hf_user,
             local_mode=True,
             stream=True,
+            notification_gateway=notification_gateway,
+            notification_destinations=config.messaging.default_auto_destinations(),
+            defer_turn_complete_notification=True,
         )
     )
 
@@ -1014,6 +1025,8 @@ async def main():
         agent_task.cancel()
         # Agent didn't shut down cleanly — close MCP explicitly
         await tool_router.__aexit__(None, None, None)
+    finally:
+        await notification_gateway.close()
 
     # Now safe to cancel the listener (agent is done emitting events)
     listener_task.cancel()
@@ -1040,8 +1053,10 @@ async def headless_main(
 
     print(f"HF token loaded", file=sys.stderr)
 
-    config = load_config(CLI_CONFIG_PATH)
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     config.yolo_mode = True  # Auto-approve everything in headless mode
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
     hf_user = _get_hf_user(hf_token)
 
     if model:
@@ -1072,6 +1087,9 @@ async def headless_main(
             user_id=hf_user,
             local_mode=True,
             stream=stream,
+            notification_gateway=notification_gateway,
+            notification_destinations=config.messaging.default_auto_destinations(),
+            defer_turn_complete_notification=True,
         )
     )
 
@@ -1197,6 +1215,10 @@ async def headless_main(
             stream_buf.discard()
             history_size = event.data.get("history_size", "?") if event.data else "?"
             print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
+            if event.event_type == "turn_complete":
+                session = session_holder[0] if session_holder else None
+                if session is not None:
+                    await session.send_deferred_turn_complete_notification(event)
             break
 
     # Shutdown
@@ -1210,6 +1232,8 @@ async def headless_main(
     except asyncio.TimeoutError:
         agent_task.cancel()
         await tool_router.__aexit__(None, None, None)
+    finally:
+        await notification_gateway.close()
 
 
 def cli():
@@ -1240,7 +1264,7 @@ def cli():
                 max_iter = 10_000  # effectively unlimited
             asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
         else:
-            asyncio.run(main())
+            asyncio.run(main(model=args.model))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 
