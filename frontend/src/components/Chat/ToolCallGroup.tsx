@@ -234,7 +234,14 @@ function spaceIdToSubdomain(spaceId: string): string {
 }
 
 function buildTrackioEmbedUrl(spaceId: string, project?: string): string {
-  const params = new URLSearchParams({ sidebar: 'hidden', footer: 'false' });
+  // __theme=dark is gradio's standard query param to force the embedded
+  // dashboard into dark mode so it blends with the surrounding chat instead
+  // of flashing a bright white panel inside the dark UI.
+  const params = new URLSearchParams({
+    sidebar: 'hidden',
+    footer: 'false',
+    __theme: 'dark',
+  });
   if (project) params.set('project', project);
   return `https://${spaceIdToSubdomain(spaceId)}.hf.space/?${params.toString()}`;
 }
@@ -335,7 +342,7 @@ function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string 
           </Button>
         </Stack>
         {expanded && (
-          <Box sx={{ position: 'relative', width: '100%', height: 480, bgcolor: '#fff' }}>
+          <Box sx={{ position: 'relative', width: '100%', height: 480, bgcolor: 'var(--code-panel-bg)' }}>
             <iframe
               src={embedUrl}
               title={`Trackio dashboard ${label}`}
@@ -365,7 +372,7 @@ function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string 
                     color: 'var(--text)',
                   }}
                 >
-                  Spinning up the dashboard…
+                  Spinning up the trackio dashboard…
                 </Typography>
                 <Typography
                   sx={{
@@ -377,7 +384,7 @@ function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string 
                     px: 2,
                   }}
                 >
-                  HF Spaces typically take 30–60 seconds to build the first time. Charts will appear automatically once the run starts logging.
+                  First load takes 30–60 seconds. Charts appear automatically once the run starts logging.
                 </Typography>
               </Stack>
             )}
