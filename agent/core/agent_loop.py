@@ -8,14 +8,8 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
-from litellm import (
-    ChatCompletionMessageToolCall,
-    Message,
-    acompletion,
-    stream_chunk_builder,
-)
+from litellm import ChatCompletionMessageToolCall, Message, acompletion
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
@@ -402,43 +396,6 @@ class LLMResult:
     token_count: int
     finish_reason: str | None
     usage: dict = field(default_factory=dict)
-    thinking_blocks: list[dict[str, Any]] | None = None
-    reasoning_content: str | None = None
-
-
-def _extract_thinking_state(
-    message: Any,
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Return provider reasoning fields that must be replayed after tool calls."""
-    thinking_blocks = getattr(message, "thinking_blocks", None) or None
-    reasoning_content = getattr(message, "reasoning_content", None) or None
-    return thinking_blocks, reasoning_content
-
-
-def _should_replay_thinking_state(model_name: str | None) -> bool:
-    """Only Anthropic's native adapter accepts replayed thinking metadata."""
-    return bool(model_name and model_name.startswith("anthropic/"))
-
-
-def _assistant_message_from_result(
-    llm_result: LLMResult,
-    *,
-    model_name: str | None,
-    tool_calls: list[ToolCall] | None = None,
-) -> Message:
-    """Build an assistant history message without dropping reasoning state."""
-    kwargs: dict[str, Any] = {
-        "role": "assistant",
-        "content": llm_result.content,
-    }
-    if tool_calls is not None:
-        kwargs["tool_calls"] = tool_calls
-    if _should_replay_thinking_state(model_name):
-        if llm_result.thinking_blocks:
-            kwargs["thinking_blocks"] = llm_result.thinking_blocks
-        if llm_result.reasoning_content:
-            kwargs["reasoning_content"] = llm_result.reasoning_content
-    return Message(**kwargs)
 
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
@@ -491,10 +448,8 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     token_count = 0
     finish_reason = None
     final_usage_chunk = None
-    chunks = []
 
     async for chunk in response:
-        chunks.append(chunk)
         if session.is_cancelled:
             tool_calls_acc.clear()
             break
@@ -543,16 +498,6 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         latency_ms=int((time.monotonic() - t_start) * 1000),
         finish_reason=finish_reason,
     )
-    thinking_blocks = None
-    reasoning_content = None
-    if chunks and _should_replay_thinking_state(llm_params.get("model")):
-        try:
-            rebuilt = stream_chunk_builder(chunks, messages=messages)
-            if rebuilt and getattr(rebuilt, "choices", None):
-                rebuilt_msg = rebuilt.choices[0].message
-                thinking_blocks, reasoning_content = _extract_thinking_state(rebuilt_msg)
-        except Exception:
-            logger.debug("Failed to rebuild streaming thinking state", exc_info=True)
 
     return LLMResult(
         content=full_content or None,
@@ -560,8 +505,6 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         token_count=token_count,
         finish_reason=finish_reason,
         usage=usage,
-        thinking_blocks=thinking_blocks,
-        reasoning_content=reasoning_content,
     )
 
 
@@ -614,7 +557,6 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     content = message.content or None
     finish_reason = choice.finish_reason
     token_count = response.usage.total_tokens if response.usage else 0
-    thinking_blocks, reasoning_content = _extract_thinking_state(message)
 
     # Build tool_calls_acc in the same format as streaming
     tool_calls_acc: dict[int, dict] = {}
@@ -649,8 +591,6 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
         token_count=token_count,
         finish_reason=finish_reason,
         usage=usage,
-        thinking_blocks=thinking_blocks,
-        reasoning_content=reasoning_content,
     )
 
 
@@ -814,10 +754,7 @@ class Handlers:
                         "  • For other tools: reduce the size of your arguments or use bash."
                     )
                     if content:
-                        assistant_msg = _assistant_message_from_result(
-                            llm_result,
-                            model_name=llm_params.get("model"),
-                        )
+                        assistant_msg = Message(role="assistant", content=content)
                         session.context_manager.add_message(assistant_msg, token_count)
                     session.context_manager.add_message(
                         Message(role="user", content=f"[SYSTEM: {truncation_hint}]")
@@ -873,10 +810,7 @@ class Handlers:
                         (content or "")[:500],
                     )
                     if content:
-                        assistant_msg = _assistant_message_from_result(
-                            llm_result,
-                            model_name=llm_params.get("model"),
-                        )
+                        assistant_msg = Message(role="assistant", content=content)
                         session.context_manager.add_message(assistant_msg, token_count)
                         final_response = content
                     break
@@ -898,9 +832,9 @@ class Handlers:
                         bad_tools.append(tc)
 
                 # Add assistant message with all tool calls to context
-                assistant_msg = _assistant_message_from_result(
-                    llm_result,
-                    model_name=llm_params.get("model"),
+                assistant_msg = Message(
+                    role="assistant",
+                    content=content,
                     tool_calls=tool_calls,
                 )
                 session.context_manager.add_message(assistant_msg, token_count)
