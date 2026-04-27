@@ -24,6 +24,7 @@ from models import (
     HealthResponse,
     LLMHealthResponse,
     SessionInfo,
+    SessionNotificationsRequest,
     SessionResponse,
     SubmitRequest,
     TruncateRequest,
@@ -513,6 +514,26 @@ async def set_session_model(
     return {"session_id": session_id, "model": model_id}
 
 
+@router.post("/session/{session_id}/notifications")
+async def set_session_notifications(
+    session_id: str,
+    body: SessionNotificationsRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Replace the session's auto-notification destinations."""
+    _check_session_access(session_id, user)
+    try:
+        destinations = session_manager.set_notification_destinations(
+            session_id, body.destinations
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "session_id": session_id,
+        "notification_destinations": destinations,
+    }
+
+
 @router.get("/user/quota")
 async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
     """Return the user's plan tier and today's Claude-session quota state."""
@@ -823,7 +844,6 @@ async def shutdown_session(
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
     return {"status": "shutdown_requested", "session_id": session_id}
-
 
 @router.post("/feedback/{session_id}")
 async def submit_feedback(
