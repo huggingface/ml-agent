@@ -25,6 +25,7 @@ from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
+from agent.utils.hf_auth import get_hf_token
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
@@ -70,25 +71,8 @@ def _safe_get_args(arguments: dict) -> dict:
 
 
 def _get_hf_token() -> str | None:
-    """Get HF token from environment, huggingface_hub API, or cached token file."""
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        return token
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        token = api.token
-        if token:
-            return token
-    except Exception:
-        pass
-    # Fallback: read the cached token file directly
-    token_path = Path.home() / ".cache" / "huggingface" / "token"
-    if token_path.exists():
-        token = token_path.read_text().strip()
-        if token:
-            return token
-    return None
+    """Get HF token from HF_TOKEN, then huggingface_hub login cache."""
+    return get_hf_token()
 
 
 async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
