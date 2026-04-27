@@ -166,18 +166,20 @@ def _resolve_llm_params(
         # (``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` / ``AWS_REGION``).
         # The Anthropic thinking/effort shape is not forwarded through Converse
         # the same way, so we leave it off for now.
-        #
+        params: dict = {"model": model_name}
         # ``cache_control_injection_points`` instructs the Converse adapter to
         # append a cachePoint at the end of the tool list. Per-tool
         # ``cache_control`` blocks (set by prompt_caching.py for the Anthropic
         # native path) are otherwise silently dropped by Converse, leaving the
-        # ~16k tokens of tool defs uncached on every Bedrock turn. System-prompt
-        # caching still works via cache_control on system content blocks
-        # (Converse reads those).
-        return {
-            "model": model_name,
-            "cache_control_injection_points": [{"location": "tool_config"}],
-        }
+        # ~16k tokens of tool defs uncached on every Bedrock turn.
+        # Only enabled for Anthropic-on-Bedrock models since other Bedrock
+        # providers (Titan, Llama, Mistral...) don't support cachePoint and
+        # Bedrock returns an error if it's set on an unsupported model.
+        # System-prompt caching still works via cache_control on system content
+        # blocks (Converse reads those for any provider).
+        if "anthropic" in model_name:
+            params["cache_control_injection_points"] = [{"location": "tool_config"}]
+        return params
 
     if model_name.startswith("openai/"):
         params = {"model": model_name}
