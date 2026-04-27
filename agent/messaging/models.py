@@ -80,6 +80,15 @@ class MessagingConfig(BaseModel):
         destination = self.get_destination(name)
         return bool(destination and destination.allow_auto_events)
 
+    def default_auto_destinations(self) -> list[str]:
+        if not self.enabled:
+            return []
+        return [
+            name
+            for name in self.destinations
+            if self.can_auto_send(name)
+        ]
+
 
 class NotificationRequest(BaseModel):
     destination: str

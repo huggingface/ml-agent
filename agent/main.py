@@ -884,6 +884,7 @@ async def main():
             local_mode=True,
             stream=True,
             notification_gateway=notification_gateway,
+            notification_destinations=config.messaging.default_auto_destinations(),
         )
     )
 
@@ -1102,6 +1103,7 @@ async def headless_main(
             local_mode=True,
             stream=stream,
             notification_gateway=notification_gateway,
+            notification_destinations=config.messaging.default_auto_destinations(),
         )
     )
 

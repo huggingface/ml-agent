@@ -99,6 +99,54 @@ def test_messaging_config_validates_destination_names():
     assert config.messaging.can_auto_send("slack.ops")
 
 
+def test_messaging_config_default_auto_destinations_only_returns_auto_enabled():
+    config = Config.model_validate(
+        {
+            "model_name": "moonshotai/Kimi-K2.6",
+            "messaging": {
+                "enabled": True,
+                "destinations": {
+                    "slack.ops": {
+                        "provider": "slack",
+                        "token": "xoxb-test",
+                        "channel": "C123",
+                        "allow_auto_events": True,
+                    },
+                    "slack.tool": {
+                        "provider": "slack",
+                        "token": "xoxb-test",
+                        "channel": "C999",
+                        "allow_agent_tool": True,
+                    },
+                },
+            },
+        }
+    )
+
+    assert config.messaging.default_auto_destinations() == ["slack.ops"]
+
+
+def test_messaging_config_default_auto_destinations_empty_when_disabled():
+    config = Config.model_validate(
+        {
+            "model_name": "moonshotai/Kimi-K2.6",
+            "messaging": {
+                "enabled": False,
+                "destinations": {
+                    "slack.ops": {
+                        "provider": "slack",
+                        "token": "xoxb-test",
+                        "channel": "C123",
+                        "allow_auto_events": True,
+                    },
+                },
+            },
+        }
+    )
+
+    assert config.messaging.default_auto_destinations() == []
+
+
 @pytest.mark.asyncio
 async def test_slack_provider_formats_and_sends_payload():
     seen: dict[str, object] = {}
