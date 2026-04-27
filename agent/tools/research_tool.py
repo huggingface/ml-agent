@@ -15,6 +15,7 @@ from litellm import Message, acompletion
 
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
+from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event
 
 logger = logging.getLogger(__name__)
@@ -215,8 +216,10 @@ RESEARCH_TOOL_SPEC = {
 
 def _get_research_model(main_model: str) -> str:
     """Pick a cheaper model for research based on the main model."""
-    if "anthropic/" in main_model:
+    if main_model.startswith("anthropic/"):
         return "anthropic/claude-sonnet-4-6"
+    if main_model.startswith("bedrock/") and "anthropic" in main_model:
+        return "bedrock/us.anthropic.claude-sonnet-4-6"
     # For non-Anthropic models (HF router etc.), use the same model
     return main_model
 
@@ -323,8 +326,9 @@ async def research_handler(
                 ),
             ))
             try:
+                _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
                 response = await acompletion(
-                    messages=messages,
+                    messages=_msgs,
                     tools=None,  # no tools — force text response
                     stream=False,
                     timeout=120,
@@ -348,9 +352,12 @@ async def research_handler(
             ))
 
         try:
+            _msgs, _tools = with_prompt_caching(
+                messages, tool_specs if tool_specs else None, llm_params.get("model")
+            )
             response = await acompletion(
-                messages=messages,
-                tools=tool_specs if tool_specs else None,
+                messages=_msgs,
+                tools=_tools,
                 tool_choice="auto",
                 stream=False,
                 timeout=120,
@@ -446,8 +453,9 @@ async def research_handler(
         ),
     ))
     try:
+        _msgs, _ = with_prompt_caching(messages, None, llm_params.get("model"))
         response = await acompletion(
-            messages=messages,
+            messages=_msgs,
             tools=None,
             stream=False,
             timeout=120,

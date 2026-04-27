@@ -15,7 +15,7 @@ from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
-DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "main_agent_config.json")
+DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "frontend_agent_config.json")
 
 
 # These dataclasses match agent/main.py structure
@@ -91,6 +91,10 @@ class AgentSession:
     is_active: bool = True
     is_processing: bool = False  # True while a submission is being executed
     broadcaster: Any = None
+    # True once this session has been counted against the user's daily
+    # Claude quota. Guards double-counting when the user re-selects an
+    # Anthropic model mid-session.
+    claude_counted: bool = False
 
 
 class SessionCapacityError(Exception):
@@ -126,7 +130,12 @@ class SessionManager:
             if s.user_id == user_id and s.is_active
         )
 
-    async def create_session(self, user_id: str = "dev", hf_token: str | None = None) -> str:
+    async def create_session(
+        self,
+        user_id: str = "dev",
+        hf_token: str | None = None,
+        model: str | None = None,
+    ) -> str:
         """Create a new agent session and return its ID.
 
         Session() and ToolRouter() constructors contain blocking I/O
@@ -135,6 +144,10 @@ class SessionManager:
 
         Args:
             user_id: The ID of the user who owns this session.
+            hf_token: The user's HF OAuth token, stored for tool execution.
+            model: Optional model override. When set, replaces ``model_name``
+                on the per-session config clone. None falls back to the
+                config default.
 
         Raises:
             SessionCapacityError: If the server or user has reached the
@@ -175,6 +188,8 @@ class SessionManager:
             # Deep-copy config so each session's model switches independently —
             # tab A picking GLM doesn't flip tab B off Claude.
             session_config = self.config.model_copy(deep=True)
+            if model:
+                session_config.model_name = model
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
                 hf_token=hf_token,
@@ -275,11 +290,14 @@ class SessionManager:
         """Delete the sandbox Space if one was created for this session."""
         sandbox = getattr(session, "sandbox", None)
         if sandbox and getattr(sandbox, "_owns_space", False):
+            space_id = getattr(sandbox, "space_id", None)
             try:
-                logger.info(f"Deleting sandbox {sandbox.space_id}...")
+                logger.info(f"Deleting sandbox {space_id}...")
                 await asyncio.to_thread(sandbox.delete)
+                from agent.core import telemetry
+                await telemetry.record_sandbox_destroy(session, sandbox)
             except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox.space_id}: {e}")
+                logger.warning(f"Failed to delete sandbox {space_id}: {e}")
 
     async def _run_session(
         self,
@@ -340,6 +358,15 @@ class SessionManager:
                 pass
 
             await self._cleanup_sandbox(session)
+
+            # Final-flush: always save on session death so we capture ended
+            # sessions even if the client disconnects without /shutdown.
+            # Idempotent via session_id key; detached subprocess.
+            if session.config.save_sessions:
+                try:
+                    session.save_and_upload_detached(session.config.session_dataset_repo)
+                except Exception as e:
+                    logger.warning(f"Final-flush failed for {session_id}: {e}")
 
             async with self._lock:
                 if session_id in self.sessions:

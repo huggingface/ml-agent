@@ -66,13 +66,13 @@ _patch_litellm_effort_validation()
 
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
-#   OpenAI direct:     minimal | low | medium | high       (reasoning_effort top-level)
+#   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
 # we deliberately do NOT maintain a per-model capability table.
 _ANTHROPIC_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
-_OPENAI_EFFORTS = {"minimal", "low", "medium", "high"}
+_OPENAI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 _HF_EFFORTS = {"low", "medium", "high"}
 
 
@@ -153,6 +153,14 @@ def _resolve_llm_params(
                 params["thinking"] = {"type": "adaptive"}
                 params["output_config"] = {"effort": level}
         return params
+
+    if model_name.startswith("bedrock/"):
+        # LiteLLM routes ``bedrock/...`` through the Converse adapter, which
+        # picks up AWS credentials from the standard env vars
+        # (``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` / ``AWS_REGION``).
+        # The Anthropic thinking/effort shape is not forwarded through Converse
+        # the same way, so we leave it off for now.
+        return {"model": model_name}
 
     if model_name.startswith("openai/"):
         params = {"model": model_name}
