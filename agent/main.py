@@ -22,6 +22,7 @@ from prompt_toolkit import PromptSession
 
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
+from agent.core.hf_tokens import resolve_hf_token
 from agent.core import model_switcher
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
@@ -70,36 +71,8 @@ def _safe_get_args(arguments: dict) -> dict:
 
 
 def _get_hf_token() -> str | None:
-    """Get HF token from environment, huggingface_hub API, or cached token file."""
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        return token
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        token = api.token
-        if token:
-            return token
-    except Exception:
-        pass
-    # Fallback: read the cached token file directly
-    token_path = Path.home() / ".cache" / "huggingface" / "token"
-    if token_path.exists():
-        token = token_path.read_text().strip()
-        if token:
-            return token
-    return None
-
-
-def _get_hf_user(token: str | None) -> str | None:
-    """Resolve the HF username for a token, if available."""
-    if not token:
-        return None
-    try:
-        from huggingface_hub import HfApi
-        return HfApi(token=token).whoami().get("name")
-    except Exception:
-        return None
+    """Get HF token from HF_TOKEN or huggingface_hub's login cache."""
+    return resolve_hf_token(os.environ.get("HF_TOKEN"))
 
 
 async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
@@ -845,7 +818,12 @@ async def main():
     config = load_config(CLI_CONFIG_PATH)
 
     # Resolve username for banner
-    hf_user = _get_hf_user(hf_token)
+    hf_user = None
+    try:
+        from huggingface_hub import HfApi
+        hf_user = HfApi(token=hf_token).whoami().get("name")
+    except Exception:
+        pass
 
     print_banner(model=config.model_name, hf_user=hf_user)
 
@@ -877,7 +855,6 @@ async def main():
             tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
-            user_id=hf_user,
             local_mode=True,
             stream=True,
         )
@@ -1063,7 +1040,6 @@ async def headless_main(
 
     config = load_config(CLI_CONFIG_PATH)
     config.yolo_mode = True  # Auto-approve everything in headless mode
-    hf_user = _get_hf_user(hf_token)
 
     if model:
         config.model_name = model
@@ -1090,7 +1066,6 @@ async def headless_main(
             tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
-            user_id=hf_user,
             local_mode=True,
             stream=stream,
         )

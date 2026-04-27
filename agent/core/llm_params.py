@@ -5,23 +5,12 @@ can import it without pulling in the whole agent loop / tool router and
 creating circular imports.
 """
 
-import os
+from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
 
 
 def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
-    token = (
-        os.environ.get("INFERENCE_TOKEN")
-        or session_hf_token
-        or os.environ.get("HF_TOKEN")
-    )
-    if token:
-        return token
-    try:
-        from huggingface_hub import get_token
-
-        return get_token()
-    except Exception:
-        return None
+    """Backward-compatible private wrapper used by tests and older imports."""
+    return resolve_hf_router_token(session_hf_token)
 
 
 def _patch_litellm_effort_validation() -> None:
@@ -145,8 +134,8 @@ def _resolve_llm_params(
       1. INFERENCE_TOKEN env — shared key on the hosted Space (inference is
          free for users, billed to the Space owner via ``X-HF-Bill-To``).
       2. session.hf_token — the user's own token (CLI / OAuth / cache file).
-      3. HF_TOKEN env — belt-and-suspenders fallback for CLI users.
-      4. huggingface_hub local cache (``hf auth login``).
+      3. huggingface_hub cache — ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` /
+         local ``hf auth login`` cache.
     """
     if model_name.startswith("anthropic/"):
         params: dict = {"model": model_name}
@@ -198,8 +187,7 @@ def _resolve_llm_params(
         "api_base": "https://router.huggingface.co/v1",
         "api_key": api_key,
     }
-    if os.environ.get("INFERENCE_TOKEN"):
-        bill_to = os.environ.get("HF_BILL_TO", "smolagents")
+    if bill_to := get_hf_bill_to():
         params["extra_headers"] = {"X-HF-Bill-To": bill_to}
     if reasoning_effort:
         hf_level = "low" if reasoning_effort == "minimal" else reasoning_effort
