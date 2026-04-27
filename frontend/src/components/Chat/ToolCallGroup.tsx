@@ -224,6 +224,16 @@ function ResearchSteps({ steps }: { steps: string[] }) {
 // Trackio dashboard embed
 // ---------------------------------------------------------------------------
 
+// HF repo IDs are `<owner>/<name>` where each segment is alphanumerics plus
+// `_`, `.`, `-`. Anything else (slashes, spaces, query params, missing owner)
+// would let an attacker-controlled string redirect the embed to a different
+// Space, so we refuse to render rather than build a malformed URL.
+const SPACE_ID_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+
+function isValidSpaceId(spaceId: string): boolean {
+  return SPACE_ID_PATTERN.test(spaceId);
+}
+
 /** HF Space embed subdomain: 'user/space_name' → 'user-space-name'. */
 function spaceIdToSubdomain(spaceId: string): string {
   return spaceId
@@ -257,6 +267,8 @@ function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string 
   const embedUrl = useMemo(() => buildTrackioEmbedUrl(spaceId, project), [spaceId, project]);
   const pageUrl = useMemo(() => buildTrackioPageUrl(spaceId, project), [spaceId, project]);
   const label = project ? `${spaceId} · ${project}` : spaceId;
+
+  if (!isValidSpaceId(spaceId)) return null;
 
   return (
     <Box sx={{ pl: 4.5, pr: 1.5, pb: 1, pt: 0.25 }}>
@@ -348,6 +360,7 @@ function TrackioEmbed({ spaceId, project }: { spaceId: string; project?: string 
               title={`Trackio dashboard ${label}`}
               loading="lazy"
               onLoad={() => setIframeLoaded(true)}
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
               style={{ border: 0, width: '100%', height: '100%', display: 'block' }}
             />
             {!iframeLoaded && (

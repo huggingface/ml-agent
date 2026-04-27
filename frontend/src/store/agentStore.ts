@@ -272,6 +272,26 @@ function saveRejectedTools(rejected: Record<string, boolean>): void {
   }
 }
 
+// Trackio dashboards survive a page reload — without persistence the iframe
+// disappears whenever the user refreshes mid-job, which is the exact moment
+// they'd want to keep watching it.
+function loadTrackioDashboards(): Record<string, { spaceId: string; project?: string }> {
+  try {
+    const stored = localStorage.getItem('hf-agent-trackio-dashboards');
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveTrackioDashboards(dashboards: Record<string, { spaceId: string; project?: string }>): void {
+  try {
+    localStorage.setItem('hf-agent-trackio-dashboards', JSON.stringify(dashboards));
+  } catch (e) {
+    console.warn('Failed to persist trackio dashboards:', e);
+  }
+}
+
 export const useAgentStore = create<AgentStore>()((set, get) => ({
   sessionStates: {},
   activeSessionId: null,
@@ -295,7 +315,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   approvalNamespaces: {},
   jobUrls: {},
   jobStatuses: {},
-  trackioDashboards: {},
+  trackioDashboards: loadTrackioDashboards(),
   toolErrors: loadToolErrors(),
   rejectedTools: loadRejectedTools(),
 
@@ -503,12 +523,12 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
       if (existing && existing.spaceId === spaceId && existing.project === project) {
         return {};
       }
-      return {
-        trackioDashboards: {
-          ...state.trackioDashboards,
-          [toolCallId]: { spaceId, ...(project ? { project } : {}) },
-        },
+      const updated = {
+        ...state.trackioDashboards,
+        [toolCallId]: { spaceId, ...(project ? { project } : {}) },
       };
+      saveTrackioDashboards(updated);
+      return { trackioDashboards: updated };
     });
   },
 
