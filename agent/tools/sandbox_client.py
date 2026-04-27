@@ -499,7 +499,7 @@ class Sandbox:
 
     space_id: str
     token: str | None = None
-    api_token: str | None = None
+    api_token: str | None = field(default=None, repr=False)
     work_dir: str = "/app"
     timeout: int = DEFAULT_TIMEOUT
     _owns_space: bool = field(default=False, repr=False)
@@ -674,13 +674,24 @@ class Sandbox:
         log("Server files uploaded, rebuild triggered.")
 
     @classmethod
-    def connect(cls, space_id: str, *, token: str | None = None) -> Sandbox:
+    def connect(
+        cls,
+        space_id: str,
+        *,
+        token: str | None = None,
+        api_token: str | None = None,
+    ) -> Sandbox:
         """
         Connect to an existing running Space.
 
         Does a health check to verify the Space is reachable.
         """
-        sb = cls(space_id=space_id, token=token, _owns_space=False)
+        sb = cls(
+            space_id=space_id,
+            token=token,
+            api_token=api_token,
+            _owns_space=False,
+        )
         sb._wait_for_api(timeout=60)
         return sb
 
