@@ -195,6 +195,9 @@ async def _enforce_jobs_access_for_approvals(
                         "The selected jobs namespace is not one of your eligible paid organizations. "
                         f"Allowed namespaces: {', '.join(access.paid_org_names)}"
                     ),
+                    "plan": user.get("plan", "free"),
+                    "tool_call_ids": invalid_namespace,
+                    "eligible_namespaces": access.paid_org_names,
                 },
             )
         missing_namespace = [

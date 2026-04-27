@@ -447,6 +447,33 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         }
         return;
       }
+      if (error.message === 'HF_JOBS_INVALID_NAMESPACE') {
+        // Saved preference is no longer one of the user's eligible namespaces
+        // (e.g. they left the org). Clear it and reopen the picker.
+        const typed = error as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<{
+            tool_call_id: string;
+            approved: boolean;
+            feedback?: string | null;
+            edited_script?: string | null;
+            namespace?: string | null;
+          }>;
+        };
+        useAgentStore.getState().setPreferredJobsNamespace(null);
+        void hydrateFromBackend();
+        if (isActiveRef.current) {
+          useAgentStore.getState().setJobsUpgradeRequired({
+            approvals: typed.approvals || [],
+            toolCallIds: (typed.detail?.tool_call_ids as string[]) || [],
+            message: String(typed.detail?.message || 'Pick a different organization for this job run.'),
+            eligibleNamespaces: (typed.detail?.eligible_namespaces as string[]) || [],
+            plan: ((typed.detail?.plan as 'free' | 'pro' | 'org') || 'free'),
+            mode: 'namespace',
+          });
+        }
+        return;
+      }
       logger.error('useChat error:', error);
       if (isActiveRef.current) {
         useAgentStore.getState().setError(error.message);
@@ -830,6 +857,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         : approval.namespace,
     }));
 
+    // Remember this choice so the picker doesn't reappear for every
+    // subsequent hf_jobs call.
+    useAgentStore.getState().setPreferredJobsNamespace(namespace);
     useAgentStore.getState().setJobsUpgradeRequired(null);
     return approveTools(approvals);
   }, [approveTools]);

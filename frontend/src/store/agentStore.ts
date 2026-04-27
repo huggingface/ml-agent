@@ -141,6 +141,10 @@ interface AgentStore {
   // Namespace overrides chosen for hf_jobs approvals (tool_call_id -> namespace)
   approvalNamespaces: Record<string, string>;
 
+  // Persisted preferred namespace for hf_jobs (auto-applied to future approvals
+  // so the user only picks once)
+  preferredJobsNamespace: string | null;
+
   // Job URLs (tool_call_id -> job URL) for HF jobs
   jobUrls: Record<string, string>;
 
@@ -198,6 +202,8 @@ interface AgentStore {
   setApprovalNamespace: (toolCallId: string, namespace: string) => void;
   getApprovalNamespace: (toolCallId: string) => string | undefined;
   clearApprovalNamespaces: () => void;
+
+  setPreferredJobsNamespace: (namespace: string | null) => void;
 
   setJobUrl: (toolCallId: string, jobUrl: string) => void;
   getJobUrl: (toolCallId: string) => string | undefined;
@@ -292,6 +298,28 @@ function saveTrackioDashboards(dashboards: Record<string, { spaceId: string; pro
   }
 }
 
+const PREFERRED_JOBS_NAMESPACE_KEY = 'hf-agent-preferred-jobs-namespace';
+
+function loadPreferredJobsNamespace(): string | null {
+  try {
+    return localStorage.getItem(PREFERRED_JOBS_NAMESPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function savePreferredJobsNamespace(namespace: string | null): void {
+  try {
+    if (namespace) {
+      localStorage.setItem(PREFERRED_JOBS_NAMESPACE_KEY, namespace);
+    } else {
+      localStorage.removeItem(PREFERRED_JOBS_NAMESPACE_KEY);
+    }
+  } catch (e) {
+    console.warn('Failed to persist preferred jobs namespace:', e);
+  }
+}
+
 export const useAgentStore = create<AgentStore>()((set, get) => ({
   sessionStates: {},
   activeSessionId: null,
@@ -313,6 +341,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
 
   editedScripts: {},
   approvalNamespaces: {},
+  preferredJobsNamespace: loadPreferredJobsNamespace(),
   jobUrls: {},
   jobStatuses: {},
   trackioDashboards: loadTrackioDashboards(),
@@ -493,6 +522,11 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   getApprovalNamespace: (toolCallId) => get().approvalNamespaces[toolCallId],
 
   clearApprovalNamespaces: () => set({ approvalNamespaces: {} }),
+
+  setPreferredJobsNamespace: (namespace) => {
+    savePreferredJobsNamespace(namespace);
+    set({ preferredJobsNamespace: namespace });
+  },
 
   // ── Job URLs ────────────────────────────────────────────────────────
 
