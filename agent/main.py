@@ -23,8 +23,10 @@ from prompt_toolkit import PromptSession
 from agent.config import load_config
 from agent.core.agent_loop import submission_loop
 from agent.core import model_switcher
+from agent.core.hf_tokens import resolve_hf_token
 from agent.core.session import OpType
 from agent.core.tools import ToolRouter
+from agent.messaging.gateway import NotificationGateway
 from agent.utils.reliability_checks import check_training_script_save_pattern
 from agent.utils.terminal_display import (
     get_console,
@@ -50,6 +52,16 @@ litellm.drop_params = True
 # on every error — users don't need it, and our friendly errors cover the case.
 litellm.suppress_debug_info = True
 
+CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
+
+
+def _configure_runtime_logging() -> None:
+    """Keep third-party warning spam from punching through the interactive UI."""
+    import logging
+
+    logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+    logging.getLogger("litellm").setLevel(logging.ERROR)
+
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
     args = arguments.get("args", {})
@@ -59,26 +71,15 @@ def _safe_get_args(arguments: dict) -> dict:
     return args if isinstance(args, dict) else {}
 
 
-def _get_hf_token() -> str | None:
-    """Get HF token from environment, huggingface_hub API, or cached token file."""
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        return token
+def _get_hf_user(token: str | None) -> str | None:
+    """Resolve the HF username for a token, if available."""
+    if not token:
+        return None
     try:
         from huggingface_hub import HfApi
-        api = HfApi()
-        token = api.token
-        if token:
-            return token
+        return HfApi(token=token).whoami().get("name")
     except Exception:
-        pass
-    # Fallback: read the cached token file directly
-    token_path = Path.home() / ".cache" / "huggingface" / "token"
-    if token_path.exists():
-        token = token_path.read_text().strip()
-        if token:
-            return token
-    return None
+        return None
 
 
 async def _prompt_and_save_hf_token(prompt_session: PromptSession) -> str:
@@ -332,6 +333,9 @@ async def event_listener(
                 stream_buf.discard()
                 print_turn_complete()
                 print_plan()
+                session = session_holder[0] if session_holder else None
+                if session is not None:
+                    await session.send_deferred_turn_complete_notification(event)
                 turn_complete_event.set()
             elif event.event_type == "interrupted":
                 shimmer.stop()
@@ -748,7 +752,7 @@ async def _handle_slash_command(
         normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
         await model_switcher.probe_and_switch_model(
-            normalized, config, session, console, _get_hf_token(),
+            normalized, config, session, console, resolve_hf_token(),
         )
         return None
 
@@ -771,8 +775,9 @@ async def _handle_slash_command(
                     console.print(f"  [dim]{m}: {eff or 'off'}[/dim]")
             console.print(
                 "[dim]Set with '/effort minimal|low|medium|high|xhigh|max|off'. "
-                "'max' and 'xhigh' are Anthropic-only; the cascade falls back "
-                "to whatever the model actually accepts.[/dim]"
+                "'max' is Anthropic-only; 'xhigh' is also supported by current "
+                "OpenAI GPT-5 models. The cascade falls back to whatever the "
+                "model actually accepts.[/dim]"
             )
             return None
         level = arg.lower()
@@ -806,7 +811,7 @@ async def _handle_slash_command(
     return None
 
 
-async def main():
+async def main(model: str | None = None):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -816,19 +821,18 @@ async def main():
     prompt_session = PromptSession()
 
     # HF token — required, prompt if missing
-    hf_token = _get_hf_token()
+    hf_token = resolve_hf_token()
     if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
-    # Resolve username for banner
-    hf_user = None
-    try:
-        from huggingface_hub import HfApi
-        hf_user = HfApi(token=hf_token).whoami().get("name")
-    except Exception:
-        pass
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+    if model:
+        config.model_name = model
 
-    print_banner(hf_user=hf_user)
+    # Resolve username for banner
+    hf_user = _get_hf_user(hf_token)
+
+    print_banner(model=config.model_name, hf_user=hf_user)
 
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
@@ -844,10 +848,8 @@ async def main():
     turn_complete_event.set()
     ready_event = asyncio.Event()
 
-    # Start agent loop in background
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
-    config = load_config(config_path)
-
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
 
@@ -862,8 +864,12 @@ async def main():
             tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
+            user_id=hf_user,
             local_mode=True,
             stream=True,
+            notification_gateway=notification_gateway,
+            notification_destinations=config.messaging.default_auto_destinations(),
+            defer_turn_complete_notification=True,
         )
     )
 
@@ -1019,6 +1025,8 @@ async def main():
         agent_task.cancel()
         # Agent didn't shut down cleanly — close MCP explicitly
         await tool_router.__aexit__(None, None, None)
+    finally:
+        await notification_gateway.close()
 
     # Now safe to cancel the listener (agent is done emitting events)
     listener_task.cancel()
@@ -1036,17 +1044,20 @@ async def headless_main(
     import logging
 
     logging.basicConfig(level=logging.WARNING)
+    _configure_runtime_logging()
 
-    hf_token = _get_hf_token()
+    hf_token = resolve_hf_token()
     if not hf_token:
         print("ERROR: No HF token found. Set HF_TOKEN or run `huggingface-cli login`.", file=sys.stderr)
         sys.exit(1)
 
     print(f"HF token loaded", file=sys.stderr)
 
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
-    config = load_config(config_path)
+    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
     config.yolo_mode = True  # Auto-approve everything in headless mode
+    notification_gateway = NotificationGateway(config.messaging)
+    await notification_gateway.start()
+    hf_user = _get_hf_user(hf_token)
 
     if model:
         config.model_name = model
@@ -1073,8 +1084,12 @@ async def headless_main(
             tool_router=tool_router,
             session_holder=session_holder,
             hf_token=hf_token,
+            user_id=hf_user,
             local_mode=True,
             stream=stream,
+            notification_gateway=notification_gateway,
+            notification_destinations=config.messaging.default_auto_destinations(),
+            defer_turn_complete_notification=True,
         )
     )
 
@@ -1200,6 +1215,10 @@ async def headless_main(
             stream_buf.discard()
             history_size = event.data.get("history_size", "?") if event.data else "?"
             print(f"\n--- Agent {event.event_type} (history_size={history_size}) ---", file=sys.stderr)
+            if event.event_type == "turn_complete":
+                session = session_holder[0] if session_holder else None
+                if session is not None:
+                    await session.send_deferred_turn_complete_notification(event)
             break
 
     # Shutdown
@@ -1213,6 +1232,8 @@ async def headless_main(
     except asyncio.TimeoutError:
         agent_task.cancel()
         await tool_router.__aexit__(None, None, None)
+    finally:
+        await notification_gateway.close()
 
 
 def cli():
@@ -1221,6 +1242,7 @@ def cli():
     import warnings
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
+    _configure_runtime_logging()
     # Suppress litellm pydantic deprecation warnings
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="litellm")
     # Suppress whoosh invalid escape sequence warnings (third-party, unfixed upstream)
@@ -1242,7 +1264,7 @@ def cli():
                 max_iter = 10_000  # effectively unlimited
             asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
         else:
-            asyncio.run(main())
+            asyncio.run(main(model=args.model))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 

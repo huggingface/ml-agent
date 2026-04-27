@@ -12,10 +12,13 @@ from typing import Any, Optional
 
 from agent.config import Config
 from agent.context_manager.manager import ContextManager
+from agent.messaging.gateway import NotificationGateway
+from agent.messaging.models import NotificationRequest
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_TOKENS = 200_000
+_TURN_COMPLETE_NOTIFICATION_CHARS = 39000
 
 
 def _get_max_tokens_safe(model_name: str) -> int:
@@ -73,16 +76,24 @@ class Session:
     def __init__(
         self,
         event_queue: asyncio.Queue,
-        config: Config | None = None,
+        config: Config,
         tool_router=None,
         context_manager: ContextManager | None = None,
         hf_token: str | None = None,
         local_mode: bool = False,
         stream: bool = True,
+        notification_gateway: NotificationGateway | None = None,
+        notification_destinations: list[str] | None = None,
+        defer_turn_complete_notification: bool = False,
+        session_id: str | None = None,
+        user_id: str | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
+        self.user_id: Optional[str] = user_id
         self.tool_router = tool_router
         self.stream = stream
+        if config is None:
+            raise ValueError("Session requires a Config")
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
         self.context_manager = context_manager or ContextManager(
             model_max_tokens=_get_max_tokens_safe(config.model_name),
@@ -93,21 +104,27 @@ class Session:
             local_mode=local_mode,
         )
         self.event_queue = event_queue
-        self.session_id = str(uuid.uuid4())
-        self.config = config or Config(
-            model_name="anthropic/claude-sonnet-4-5-20250929",
-        )
+        self.session_id = session_id or str(uuid.uuid4())
+        self.config = config
         self.is_running = True
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
+        self.notification_gateway = notification_gateway
+        self.notification_destinations = list(notification_destinations or [])
+        self.defer_turn_complete_notification = defer_turn_complete_notification
 
         # Session trajectory logging
         self.logged_events: list[dict] = []
         self.session_start_time = datetime.now().isoformat()
         self.turn_count: int = 0
         self.last_auto_save_turn: int = 0
+        # Stable local save path so heartbeat saves overwrite one file instead
+        # of spamming session_logs/. ``_last_heartbeat_ts`` is owned by
+        # ``agent.core.telemetry.HeartbeatSaver`` and lazily initialised there.
+        self._local_save_path: Optional[str] = None
+        self._last_heartbeat_ts: Optional[float] = None
 
         # Per-model probed reasoning-effort cache. Populated by the probe
         # on /model switch, read by ``effective_effort_for`` below. Keys are
@@ -131,6 +148,120 @@ class Session:
                 "data": event.data,
             }
         )
+        await self._enqueue_auto_notification_requests(event)
+
+        # Mid-turn heartbeat flush (owned by telemetry module).
+        from agent.core.telemetry import HeartbeatSaver
+
+        HeartbeatSaver.maybe_fire(self)
+
+    def set_notification_destinations(self, destinations: list[str]) -> None:
+        """Replace the session's opted-in auto-notification destinations."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for destination in destinations:
+            if destination not in seen:
+                deduped.append(destination)
+                seen.add(destination)
+        self.notification_destinations = deduped
+
+    async def send_deferred_turn_complete_notification(self, event: Event) -> None:
+        if event.event_type != "turn_complete":
+            return
+        await self._enqueue_auto_notification_requests(
+            event,
+            include_deferred_turn_complete=True,
+        )
+
+    async def _enqueue_auto_notification_requests(
+        self,
+        event: Event,
+        include_deferred_turn_complete: bool = False,
+    ) -> None:
+        if self.notification_gateway is None:
+            return
+        if not self.notification_destinations:
+            return
+        auto_events = set(self.config.messaging.auto_event_types)
+        if event.event_type not in auto_events:
+            return
+        if (
+            self.defer_turn_complete_notification
+            and event.event_type == "turn_complete"
+            and not include_deferred_turn_complete
+        ):
+            return
+
+        requests = self._build_auto_notification_requests(event)
+        for request in requests:
+            await self.notification_gateway.enqueue(request)
+
+    def _build_auto_notification_requests(
+        self, event: Event
+    ) -> list[NotificationRequest]:
+        metadata = {
+            "session_id": self.session_id,
+            "model": self.config.model_name,
+            "event_type": event.event_type,
+        }
+
+        title: str | None = None
+        message: str | None = None
+        severity = "info"
+        data = event.data or {}
+        if event.event_type == "approval_required":
+            tools = data.get("tools", [])
+            tool_names = []
+            for tool in tools if isinstance(tools, list) else []:
+                if isinstance(tool, dict):
+                    tool_name = str(tool.get("tool") or "").strip()
+                    if tool_name and tool_name not in tool_names:
+                        tool_names.append(tool_name)
+            count = len(tools) if isinstance(tools, list) else 0
+            title = "Agent approval required"
+            message = (
+                f"Session {self.session_id} is waiting for approval "
+                f"for {count} tool call(s)."
+            )
+            if tool_names:
+                message += " Tools: " + ", ".join(tool_names)
+            severity = "warning"
+        elif event.event_type == "error":
+            title = "Agent error"
+            error = str(data.get("error") or "Unknown error")
+            message = f"Session {self.session_id} hit an error.\n{error[:500]}"
+            severity = "error"
+        elif event.event_type == "turn_complete":
+            title = "Agent task complete"
+            summary = str(data.get("final_response") or "").strip()
+            if summary:
+                summary = summary[:_TURN_COMPLETE_NOTIFICATION_CHARS]
+                message = (
+                    f"Session {self.session_id} completed successfully.\n"
+                    f"{summary}"
+                )
+            else:
+                message = f"Session {self.session_id} completed successfully."
+            severity = "success"
+
+        if message is None:
+            return []
+
+        requests: list[NotificationRequest] = []
+        for destination in self.notification_destinations:
+            if not self.config.messaging.can_auto_send(destination):
+                continue
+            requests.append(
+                NotificationRequest(
+                    destination=destination,
+                    title=title,
+                    message=message,
+                    severity=severity,
+                    metadata=metadata,
+                    event_type=event.event_type,
+                )
+            )
+        return requests
 
     def cancel(self) -> None:
         """Signal cancellation to the running agent loop."""
@@ -184,13 +315,30 @@ class Session:
 
     def get_trajectory(self) -> dict:
         """Serialize complete session trajectory for logging"""
+        tools: list = []
+        if self.tool_router is not None:
+            try:
+                tools = self.tool_router.get_tool_specs_for_llm() or []
+            except Exception:
+                tools = []
+        # Sum per-call cost from llm_call events so analyzers don't have to
+        # walk the events array themselves. Each `llm_call` event already
+        # carries cost_usd from `agent.core.telemetry.record_llm_call`.
+        total_cost_usd = sum(
+            float((e.get("data") or {}).get("cost_usd") or 0.0)
+            for e in self.logged_events
+            if e.get("event_type") == "llm_call"
+        )
         return {
             "session_id": self.session_id,
+            "user_id": self.user_id,
             "session_start_time": self.session_start_time,
             "session_end_time": datetime.now().isoformat(),
             "model_name": self.config.model_name,
+            "total_cost_usd": total_cost_usd,
             "messages": [msg.model_dump() for msg in self.context_manager.items],
             "events": self.logged_events,
+            "tools": tools,
         }
 
     def save_trajectory_local(
@@ -216,16 +364,42 @@ class Session:
 
             trajectory = self.get_trajectory()
 
+            # Scrub secrets at save time so session_logs/ never holds raw
+            # tokens on disk — a log aggregator, crash dump, or filesystem
+            # snapshot between heartbeats would otherwise leak them.
+            try:
+                from agent.core.redact import scrub
+                for key in ("messages", "events", "tools"):
+                    if key in trajectory:
+                        trajectory[key] = scrub(trajectory[key])
+            except Exception as _e:
+                logger.debug("Redact-on-save failed (non-fatal): %s", _e)
+
             # Add upload metadata
             trajectory["upload_status"] = upload_status
             trajectory["upload_url"] = dataset_url
             trajectory["last_save_time"] = datetime.now().isoformat()
 
-            filename = f"session_{self.session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            filepath = log_dir / filename
+            # Reuse one stable path per session so heartbeat saves overwrite
+            # the same file instead of creating a new timestamped file every
+            # minute. The timestamp in the filename is kept for first-save
+            # ordering; subsequent saves just rewrite that file.
+            if self._local_save_path and Path(self._local_save_path).parent == log_dir:
+                filepath = Path(self._local_save_path)
+            else:
+                filename = (
+                    f"session_{self.session_id}_"
+                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                )
+                filepath = log_dir / filename
+                self._local_save_path = str(filepath)
 
-            with open(filepath, "w") as f:
+            # Atomic-ish write: stage to .tmp then rename so a crash mid-write
+            # doesn't leave a truncated JSON that breaks the retry scanner.
+            tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+            with open(tmp_path, "w") as f:
                 json.dump(trajectory, f, indent=2)
+            tmp_path.replace(filepath)
 
             return str(filepath)
         except Exception as e:

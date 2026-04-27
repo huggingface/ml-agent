@@ -24,6 +24,7 @@ from models import (
     HealthResponse,
     LLMHealthResponse,
     SessionInfo,
+    SessionNotificationsRequest,
     SessionResponse,
     SubmitRequest,
     TruncateRequest,
@@ -32,6 +33,8 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 
 import user_quotas
 
+from agent.core.hf_access import get_jobs_access
+from agent.core.hf_tokens import resolve_hf_request_token, resolve_hf_router_token
 from agent.core.llm_params import _resolve_llm_params
 
 logger = logging.getLogger(__name__)
@@ -47,7 +50,7 @@ AVAILABLE_MODELS = [
         "recommended": True,
     },
     {
-        "id": "anthropic/claude-opus-4-6",
+        "id": "bedrock/us.anthropic.claude-opus-4-6-v1",
         "label": "Claude Opus 4.6",
         "provider": "anthropic",
         "tier": "pro",
@@ -68,17 +71,21 @@ AVAILABLE_MODELS = [
 ]
 
 
+def _is_anthropic_model(model_id: str) -> bool:
+    return "anthropic" in model_id
+
+
 async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select an Anthropic model.
 
     Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; every
     other model in ``AVAILABLE_MODELS`` is routed through HF Router and
-    billed via ``X-HF-Bill-To``. The gate only fires for ``anthropic/*`` so
+    billed via ``X-HF-Bill-To``. The gate only fires for Anthropic so
     non-HF users can still freely switch between the free models.
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
     """
-    if not model_id.startswith("anthropic/"):
+    if not _is_anthropic_model(model_id):
         return
     if not await require_huggingface_org_member(request):
         raise HTTPException(
@@ -110,7 +117,7 @@ async def _enforce_claude_quota(
     if agent_session.claude_counted:
         return
     model_name = agent_session.session.config.model_name
-    if not model_name.startswith("anthropic/"):
+    if not _is_anthropic_model(model_name):
         return
     user_id = user["user_id"]
     used = await user_quotas.get_claude_used_today(user_id)
@@ -130,6 +137,105 @@ async def _enforce_claude_quota(
         )
     await user_quotas.increment_claude(user_id)
     agent_session.claude_counted = True
+
+
+async def _enforce_jobs_access_for_approvals(
+    user: dict[str, Any],
+    agent_session: AgentSession,
+    approvals: list[dict[str, Any]],
+) -> None:
+    """Block approved hf_jobs tool calls when the user has no eligible jobs namespace."""
+    pending = agent_session.session.pending_approval or {}
+    tool_calls = pending.get("tool_calls") or []
+    if not tool_calls:
+        return
+
+    approved_ids = {
+        a.get("tool_call_id")
+        for a in approvals
+        if a.get("approved")
+    }
+    if not approved_ids:
+        return
+
+    hf_job_ids = [
+        tc.id for tc in tool_calls
+        if tc.id in approved_ids and tc.function.name == "hf_jobs"
+    ]
+    if not hf_job_ids:
+        return
+
+    token = agent_session.hf_token or agent_session.session.hf_token
+    if not token:
+        return
+
+    access = await get_jobs_access(token)
+    if access is None:
+        return
+
+    approval_map = {a.get("tool_call_id"): a for a in approvals}
+    if access.personal_can_run_jobs:
+        return
+
+    if access.paid_org_names:
+        invalid_namespace = [
+            tool_call_id
+            for tool_call_id in hf_job_ids
+            if (
+                approval_map.get(tool_call_id, {}).get("namespace")
+                and approval_map.get(tool_call_id, {}).get("namespace") not in access.paid_org_names
+            )
+        ]
+        if invalid_namespace:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "hf_jobs_invalid_namespace",
+                    "message": (
+                        "The selected jobs namespace is not one of your eligible paid organizations. "
+                        f"Allowed namespaces: {', '.join(access.paid_org_names)}"
+                    ),
+                },
+            )
+        missing_namespace = [
+            tool_call_id
+            for tool_call_id in hf_job_ids
+            if not approval_map.get(tool_call_id, {}).get("namespace")
+        ]
+        if missing_namespace:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "hf_jobs_namespace_required",
+                    "message": "Choose which paid organization should own this job run.",
+                    "plan": user.get("plan", "free"),
+                    "tool_call_ids": missing_namespace,
+                    "eligible_namespaces": access.paid_org_names,
+                },
+            )
+        return
+
+    from agent.core import telemetry
+    await telemetry.record_jobs_access_blocked(
+        agent_session.session,
+        tool_call_ids=hf_job_ids,
+        plan=user.get("plan", "free"),
+        eligible_namespaces=access.eligible_namespaces,
+    )
+
+    raise HTTPException(
+        status_code=402,
+        detail={
+            "error": "hf_jobs_upgrade_required",
+            "message": (
+                "Hugging Face Jobs are available only to Pro users and Team or Enterprise organizations. "
+                "Upgrade to Pro, or decline the job tool call so the agent can choose another path."
+            ),
+            "plan": user.get("plan", "free"),
+            "tool_call_ids": hf_job_ids,
+            "eligible_namespaces": access.eligible_namespaces,
+        },
+    )
 
 
 def _check_session_access(session_id: str, user: dict[str, Any]) -> None:
@@ -228,10 +334,8 @@ async def generate_title(
     reasoning model — reasoning_effort=low keeps the reasoning budget small
     so the 60-token output budget isn't consumed before the title is written.
     """
-    api_key = (
-        os.environ.get("INFERENCE_TOKEN")
-        or (user.get("hf_token") if isinstance(user, dict) else None)
-        or os.environ.get("HF_TOKEN")
+    api_key = resolve_hf_router_token(
+        user.get("hf_token") if isinstance(user, dict) else None
     )
     try:
         response = await acompletion(
@@ -287,14 +391,7 @@ async def create_session(
     Returns 503 if the server or user has reached the session limit.
     """
     # Extract the user's HF token (Bearer header, HttpOnly cookie, or env var)
-    hf_token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        hf_token = auth_header[7:]
-    if not hf_token:
-        hf_token = request.cookies.get("hf_access_token")
-    if not hf_token:
-        hf_token = os.environ.get("HF_TOKEN")
+    hf_token = resolve_hf_request_token(request)
 
     # Optional model override. Empty body falls back to the config default.
     model: str | None = None
@@ -340,14 +437,7 @@ async def restore_session_summary(
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="Missing 'messages' array")
 
-    hf_token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        hf_token = auth_header[7:]
-    if not hf_token:
-        hf_token = request.cookies.get("hf_access_token")
-    if not hf_token:
-        hf_token = os.environ.get("HF_TOKEN")
+    hf_token = resolve_hf_request_token(request)
 
     model = body.get("model")
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
@@ -424,6 +514,26 @@ async def set_session_model(
     return {"session_id": session_id, "model": model_id}
 
 
+@router.post("/session/{session_id}/notifications")
+async def set_session_notifications(
+    session_id: str,
+    body: SessionNotificationsRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Replace the session's auto-notification destinations."""
+    _check_session_access(session_id, user)
+    try:
+        destinations = session_manager.set_notification_destinations(
+            session_id, body.destinations
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "session_id": session_id,
+        "notification_destinations": destinations,
+    }
+
+
 @router.get("/user/quota")
 async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
     """Return the user's plan tier and today's Claude-session quota state."""
@@ -435,6 +545,20 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
         "claude_used_today": used,
         "claude_daily_cap": cap,
         "claude_remaining": max(0, cap - used),
+    }
+
+
+@router.get("/user/jobs-access")
+async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
+    """Return whether the current token can run HF Jobs and under which namespaces."""
+    token = resolve_hf_request_token(request)
+
+    access = await get_jobs_access(token or "")
+    return {
+        "plan": user.get("plan", "free"),
+        "can_run_jobs": bool(access and (access.personal_can_run_jobs or access.paid_org_names)),
+        "eligible_namespaces": access.eligible_namespaces if access else [],
+        "default_namespace": access.default_namespace if access else None,
     }
 
 
@@ -478,15 +602,20 @@ async def submit_approval(
 ) -> dict:
     """Submit tool approvals to a session. Only accessible by the session owner."""
     _check_session_access(request.session_id, user)
+    agent_session = session_manager.sessions.get(request.session_id)
+    if agent_session is None:
+        raise HTTPException(status_code=404, detail="Session not found or inactive")
     approvals = [
         {
             "tool_call_id": a.tool_call_id,
             "approved": a.approved,
             "feedback": a.feedback,
             "edited_script": a.edited_script,
+            "namespace": a.namespace,
         }
         for a in request.approvals
     ]
+    await _enforce_jobs_access_for_approvals(user, agent_session, approvals)
     success = await session_manager.submit_approval(request.session_id, approvals)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
@@ -536,9 +665,11 @@ async def chat_sse(
                     "approved": a["approved"],
                     "feedback": a.get("feedback"),
                     "edited_script": a.get("edited_script"),
+                    "namespace": a.get("namespace"),
                 }
                 for a in approvals
             ]
+            await _enforce_jobs_access_for_approvals(user, agent_session, formatted)
             success = await session_manager.submit_approval(session_id, formatted)
         elif text is not None:
             success = await session_manager.submit_user_input(session_id, text)
@@ -550,12 +681,38 @@ async def chat_sse(
             broadcaster.unsubscribe(sub_id)
             raise HTTPException(status_code=404, detail="Session not found or inactive")
     except HTTPException:
+        broadcaster.unsubscribe(sub_id)
         raise
     except Exception:
         broadcaster.unsubscribe(sub_id)
         raise
 
     return _sse_response(broadcaster, event_queue, sub_id)
+
+
+@router.post("/pro-click/{session_id}")
+async def record_pro_click(
+    session_id: str,
+    body: dict,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Record a click on a Pro upgrade CTA shown from inside a session."""
+    _check_session_access(session_id, user)
+    agent_session = session_manager.sessions.get(session_id)
+    if not agent_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    from agent.core import telemetry
+    await telemetry.record_pro_cta_click(
+        agent_session.session,
+        source=str(body.get("source") or "unknown"),
+        target=str(body.get("target") or "pro_pricing"),
+    )
+    if agent_session.session.config.save_sessions:
+        agent_session.session.save_and_upload_detached(
+            agent_session.session.config.session_dataset_repo
+        )
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -688,4 +845,39 @@ async def shutdown_session(
         raise HTTPException(status_code=404, detail="Session not found or inactive")
     return {"status": "shutdown_requested", "session_id": session_id}
 
+@router.post("/feedback/{session_id}")
+async def submit_feedback(
+    session_id: str,
+    body: dict,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Attach a user feedback signal to a session's event log.
 
+    Body: {rating: "up"|"down"|"outcome_success"|"outcome_fail",
+           turn_index?: int, comment?: str, message_id?: str}
+    Appended as a `feedback` event and saved with the session trajectory.
+    """
+    _check_session_access(session_id, user)
+    agent_session = session_manager.sessions.get(session_id)
+    if not agent_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    rating = body.get("rating")
+    if rating not in {"up", "down", "outcome_success", "outcome_fail"}:
+        raise HTTPException(status_code=400, detail="invalid rating")
+
+    from agent.core import telemetry
+    await telemetry.record_feedback(
+        agent_session.session,
+        rating=rating,
+        turn_index=body.get("turn_index"),
+        message_id=body.get("message_id"),
+        comment=body.get("comment"),
+    )
+    # Fire-and-forget save so feedback reaches the dataset even if the user
+    # closes the tab right after clicking.
+    if agent_session.session.config.save_sessions:
+        agent_session.session.save_and_upload_detached(
+            agent_session.session.config.session_dataset_repo
+        )
+    return {"status": "ok"}

@@ -12,6 +12,10 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request, status
 
+from agent.core.hf_tokens import bearer_token_from_header
+
+from agent.core.hf_access import fetch_whoami_v2, jobs_access_from_whoami
+
 logger = logging.getLogger(__name__)
 
 OPENID_PROVIDER_URL = os.environ.get("OPENID_PROVIDER_URL", "https://huggingface.co")
@@ -80,41 +84,6 @@ def _user_from_info(user_info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _normalize_plan(whoami: dict[str, Any]) -> str:
-    """Map an HF /api/whoami-v2 payload to one of: 'free' | 'pro' | 'org'.
-
-    The exact field shape in whoami-v2 isn't documented for our purposes,
-    so we try a handful of likely keys and fall back to 'free'. The first
-    call logs the raw shape at DEBUG (see `_fetch_user_plan`) so we can
-    pin the real key post-deploy.
-    """
-    plan_str = ""
-    for key in ("plan", "type", "accountType"):
-        val = whoami.get(key)
-        if isinstance(val, str) and val:
-            plan_str = val.lower()
-            break
-
-    if not plan_str:
-        if whoami.get("isPro") is True or whoami.get("is_pro") is True:
-            return "pro"
-
-    if "pro" in plan_str or "enterprise" in plan_str or "team" in plan_str:
-        return "pro"
-
-    # Org tier: anyone in a paid / enterprise org. We don't pay for this
-    # right now, but the "pro" cap applies identically.
-    orgs = whoami.get("orgs") or []
-    if isinstance(orgs, list):
-        for org in orgs:
-            if isinstance(org, dict):
-                org_plan = str(org.get("plan") or org.get("type") or "").lower()
-                if "pro" in org_plan or "enterprise" in org_plan or "team" in org_plan:
-                    return "org"
-
-    return "free"
-
-
 async def _fetch_user_plan(token: str) -> str:
     """Look up the user's HF plan via /api/whoami-v2.
 
@@ -123,19 +92,9 @@ async def _fetch_user_plan(token: str) -> str:
     grant the Pro cap than over-grant it on bad data.
     """
     global _WHOAMI_SHAPE_LOGGED
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
-            resp = await client.get(
-                f"{OPENID_PROVIDER_URL}/api/whoami-v2",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            if resp.status_code != 200:
-                return "free"
-            whoami = resp.json()
-        except httpx.HTTPError:
-            return "free"
-        except ValueError:
-            return "free"
+    whoami = await fetch_whoami_v2(token)
+    if whoami is None:
+        return "free"
 
     if not _WHOAMI_SHAPE_LOGGED:
         _WHOAMI_SHAPE_LOGGED = True
@@ -149,7 +108,7 @@ async def _fetch_user_plan(token: str) -> str:
 
     if not isinstance(whoami, dict):
         return "free"
-    return _normalize_plan(whoami)
+    return jobs_access_from_whoami(whoami).plan
 
 
 async def _extract_user_from_token(token: str) -> dict[str, Any] | None:
@@ -200,9 +159,8 @@ async def get_current_user(request: Request) -> dict[str, Any]:
         return DEV_USER
 
     # Try Authorization header
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
+    token = bearer_token_from_header(request.headers.get("Authorization", ""))
+    if token:
         user = await _extract_user_from_token(token)
         if user:
             return user
@@ -226,9 +184,9 @@ def _extract_token(request: Request) -> str | None:
 
     Mirrors the lookup order used by ``get_current_user``.
     """
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        return auth_header[7:]
+    token = bearer_token_from_header(request.headers.get("Authorization", ""))
+    if token:
+        return token
     return request.cookies.get("hf_access_token")
 
 
@@ -245,5 +203,3 @@ async def require_huggingface_org_member(request: Request) -> bool:
     if not token:
         return False
     return await check_org_membership(token, HF_EMPLOYEE_ORG)
-
-

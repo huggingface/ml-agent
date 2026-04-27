@@ -10,12 +10,13 @@ from typing import Any, Optional
 
 from agent.config import load_config
 from agent.core.agent_loop import process_submission
+from agent.messaging.gateway import NotificationGateway
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
-DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "main_agent_config.json")
+DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "configs" / "frontend_agent_config.json")
 
 
 # These dataclasses match agent/main.py structure
@@ -119,8 +120,17 @@ class SessionManager:
 
     def __init__(self, config_path: str | None = None) -> None:
         self.config = load_config(config_path or DEFAULT_CONFIG_PATH)
+        self.messaging_gateway = NotificationGateway(self.config.messaging)
         self.sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        """Start shared background resources."""
+        await self.messaging_gateway.start()
+
+    async def close(self) -> None:
+        """Flush and close shared background resources."""
+        await self.messaging_gateway.close()
 
     def _count_user_sessions(self, user_id: str) -> int:
         """Count active sessions owned by a specific user."""
@@ -193,6 +203,10 @@ class SessionManager:
             session = Session(
                 event_queue, config=session_config, tool_router=tool_router,
                 hf_token=hf_token,
+                user_id=user_id,
+                notification_gateway=self.messaging_gateway,
+                notification_destinations=[],
+                session_id=session_id,
             )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
@@ -290,11 +304,14 @@ class SessionManager:
         """Delete the sandbox Space if one was created for this session."""
         sandbox = getattr(session, "sandbox", None)
         if sandbox and getattr(sandbox, "_owns_space", False):
+            space_id = getattr(sandbox, "space_id", None)
             try:
-                logger.info(f"Deleting sandbox {sandbox.space_id}...")
+                logger.info(f"Deleting sandbox {space_id}...")
                 await asyncio.to_thread(sandbox.delete)
+                from agent.core import telemetry
+                await telemetry.record_sandbox_destroy(session, sandbox)
             except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox.space_id}: {e}")
+                logger.warning(f"Failed to delete sandbox {space_id}: {e}")
 
     async def _run_session(
         self,
@@ -355,6 +372,15 @@ class SessionManager:
                 pass
 
             await self._cleanup_sandbox(session)
+
+            # Final-flush: always save on session death so we capture ended
+            # sessions even if the client disconnects without /shutdown.
+            # Idempotent via session_id key; detached subprocess.
+            if session.config.save_sessions:
+                try:
+                    session.save_and_upload_detached(session.config.session_dataset_repo)
+                except Exception as e:
+                    logger.warning(f"Final-flush failed for {session_id}: {e}")
 
             async with self._lock:
                 if session_id in self.sessions:
@@ -506,7 +532,38 @@ class SessionManager:
             "user_id": agent_session.user_id,
             "pending_approval": pending_approval,
             "model": agent_session.session.config.model_name,
+            "notification_destinations": list(
+                agent_session.session.notification_destinations
+            ),
         }
+
+    def set_notification_destinations(
+        self, session_id: str, destinations: list[str]
+    ) -> list[str]:
+        """Replace the session's opted-in auto-notification destinations."""
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            raise ValueError("Session not found or inactive")
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_name in destinations:
+            name = raw_name.strip()
+            if not name:
+                raise ValueError("Destination names must not be empty")
+            destination = self.config.messaging.get_destination(name)
+            if destination is None:
+                raise ValueError(f"Unknown destination '{name}'")
+            if not destination.allow_auto_events:
+                raise ValueError(
+                    f"Destination '{name}' is not enabled for auto events"
+                )
+            if name not in seen:
+                normalized.append(name)
+                seen.add(name)
+
+        agent_session.session.set_notification_destinations(normalized)
+        return normalized
 
     def list_sessions(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """List sessions, optionally filtered by user.
