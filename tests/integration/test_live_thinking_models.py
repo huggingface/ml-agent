@@ -106,6 +106,10 @@ async def test_live_opus_47_preserves_thinking_metadata_for_replay():
     )
 
     assert result.content or result.tool_calls_acc
+    assert result.thinking_blocks, (
+        "Opus returned no thinking_blocks with reasoning_effort='high' - "
+        "check that adaptive thinking params are being forwarded correctly"
+    )
     assert getattr(replay, "thinking_blocks", None) == result.thinking_blocks
     assert getattr(replay, "reasoning_content", None) == result.reasoning_content
 
@@ -135,6 +139,7 @@ async def test_live_latest_gpt_does_not_replay_reasoning_metadata():
 
     # Even if a GPT-family response carries provider reasoning internally,
     # OpenAI-compatible history must not echo it back on the next tool turn.
+    # Force the non-None strip path when the live model omits reasoning details.
     result.reasoning_content = result.reasoning_content or "synthetic-reasoning"
     replay = _assistant_message_from_result(
         result,
