@@ -1,0 +1,22 @@
+{
+  "name": "ml-intern",
+  "owner": {
+    "name": "Hugging Face",
+    "url": "https://github.com/huggingface"
+  },
+  "metadata": {
+    "description": "ML engineering plugins for Claude Code, built on the Hugging Face ecosystem.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "ml-intern",
+      "source": "./plugin",
+      "description": "ML engineering assistant for Hugging Face — research-first methodology, dataset auditing, HF Jobs orchestration, sandbox-driven development. Slash commands, a research subagent, and content-aware approval policy ported from the standalone ml-intern CLI.",
+      "version": "0.1.0",
+      "category": "ml",
+      "tags": ["huggingface", "ml", "training", "fine-tuning", "datasets"],
+      "strict": false
+    }
+  ]
+}

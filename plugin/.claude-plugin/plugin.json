@@ -1,0 +1,22 @@
+{
+  "name": "ml-intern",
+  "version": "0.1.0",
+  "description": "ML engineering assistant for the Hugging Face ecosystem — research-first methodology, dataset auditing, HF Jobs orchestration, sandbox-driven development. Slash commands, a research subagent, and content-aware approval policy ported from the standalone ml-intern CLI.",
+  "author": {
+    "name": "Hugging Face",
+    "url": "https://github.com/huggingface/ml-intern"
+  },
+  "homepage": "https://github.com/huggingface/ml-intern",
+  "repository": "https://github.com/huggingface/ml-intern",
+  "license": "Apache-2.0",
+  "keywords": [
+    "huggingface",
+    "ml",
+    "fine-tuning",
+    "training",
+    "datasets",
+    "papers",
+    "agent",
+    "mcp"
+  ]
+}

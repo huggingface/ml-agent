@@ -1,0 +1,49 @@
+name: Plugin vendor sync check
+
+# Guards against drift between agent/tools/* (source of truth) and
+# plugin/lib/ml_intern_lib/* (vendored snapshot used by the Claude Code plugin).
+#
+# If anyone edits agent/tools/*.py or agent/core/redact.py without re-running
+# scripts/sync_plugin_vendored.py, this job fails and points them at the script.
+#
+# This workflow uses only static commands and does not consume any
+# attacker-controlled fields from github.event.*, so command-injection
+# guidance does not apply.
+
+on:
+  pull_request:
+    paths:
+      - "agent/tools/**"
+      - "agent/core/redact.py"
+      - "plugin/lib/ml_intern_lib/**"
+      - "scripts/sync_plugin_vendored.py"
+  push:
+    branches: [main]
+    paths:
+      - "agent/tools/**"
+      - "agent/core/redact.py"
+      - "plugin/lib/ml_intern_lib/**"
+      - "scripts/sync_plugin_vendored.py"
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Re-vendor and check for drift
+        run: |
+          uv run python scripts/sync_plugin_vendored.py
+          if ! git diff --exit-code -- plugin/lib/ml_intern_lib; then
+            echo "::error::plugin/lib/ml_intern_lib is out of sync with agent/tools/* and agent/core/redact.py"
+            echo "::error::Run 'uv run python scripts/sync_plugin_vendored.py' locally and commit the result."
+            exit 1
+          fi
+          echo "Vendored plugin library is in sync with upstream agent/."

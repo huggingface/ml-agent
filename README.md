@@ -56,6 +56,30 @@ ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
+### Running inside Claude Code
+
+Two ways:
+
+**As a plugin** (use ml-intern's slash commands and tools in *any* repo):
+
+```
+/plugin marketplace add huggingface/ml-intern
+/plugin install ml-intern@ml-intern
+```
+
+See [`plugin/README.md`](plugin/README.md) for plugin docs.
+
+**As a project** (this repo, for hacking on ml-intern itself). From the repo root:
+
+```bash
+claude                                          # interactive
+claude -p "fine-tune llama on my dataset"       # headless
+```
+
+Claude Code picks up `CLAUDE.md` (persona), `.mcp.json` (HF tools via `packages/mcp_server`), `.claude/agents/research.md` (research subagent), `.claude/commands/*.md` (slash commands: `/ml-intern`, `/research`, `/inspect-dataset`, `/finetune`, `/run-job`), and `.claude/hooks/` (content-aware approval, session redaction + upload, dynamic context injection). The standalone CLI under `agent/` is unchanged — both share the same tool implementations.
+
+See [`CLAUDE_CODE_GUIDE.md`](CLAUDE_CODE_GUIDE.md) for slash commands, approvals, env knobs, and troubleshooting.
+
 ## Architecture
 
 ### Component Overview
