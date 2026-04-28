@@ -342,14 +342,20 @@ async def research_handler(
                     timeout=120,
                     **llm_params,
                 )
-                await telemetry.record_llm_call(
-                    session,
-                    model=research_model,
-                    response=response,
-                    latency_ms=int((time.monotonic() - _t0) * 1000),
-                    finish_reason=response.choices[0].finish_reason if response.choices else None,
-                    kind="research",
-                )
+                # Telemetry is best-effort; a logging blip must never mask a
+                # valid LLM response (the surrounding except would convert it
+                # to "summary call failed").
+                try:
+                    await telemetry.record_llm_call(
+                        session,
+                        model=research_model,
+                        response=response,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                        finish_reason=response.choices[0].finish_reason if response.choices else None,
+                        kind="research",
+                    )
+                except Exception as _telem_err:
+                    logger.debug("research telemetry failed: %s", _telem_err)
                 content = response.choices[0].message.content or ""
                 return content or "Research context exhausted — no summary produced.", bool(content)
             except Exception:
@@ -380,14 +386,17 @@ async def research_handler(
                 timeout=120,
                 **llm_params,
             )
-            await telemetry.record_llm_call(
-                session,
-                model=research_model,
-                response=response,
-                latency_ms=int((time.monotonic() - _t0) * 1000),
-                finish_reason=response.choices[0].finish_reason if response.choices else None,
-                kind="research",
-            )
+            try:
+                await telemetry.record_llm_call(
+                    session,
+                    model=research_model,
+                    response=response,
+                    latency_ms=int((time.monotonic() - _t0) * 1000),
+                    finish_reason=response.choices[0].finish_reason if response.choices else None,
+                    kind="research",
+                )
+            except Exception as _telem_err:
+                logger.debug("research telemetry failed: %s", _telem_err)
         except Exception as e:
             logger.error("Research sub-agent LLM error: %s", e)
             return f"Research agent LLM error: {e}", False
@@ -487,14 +496,17 @@ async def research_handler(
             timeout=120,
             **llm_params,
         )
-        await telemetry.record_llm_call(
-            session,
-            model=research_model,
-            response=response,
-            latency_ms=int((time.monotonic() - _t0) * 1000),
-            finish_reason=response.choices[0].finish_reason if response.choices else None,
-            kind="research",
-        )
+        try:
+            await telemetry.record_llm_call(
+                session,
+                model=research_model,
+                response=response,
+                latency_ms=int((time.monotonic() - _t0) * 1000),
+                finish_reason=response.choices[0].finish_reason if response.choices else None,
+                kind="research",
+            )
+        except Exception as _telem_err:
+            logger.debug("research telemetry failed: %s", _telem_err)
         content = response.choices[0].message.content or ""
         if content:
             return content, True

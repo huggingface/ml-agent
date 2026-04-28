@@ -4,6 +4,7 @@ Context management for conversation history
 
 import logging
 import os
+import time
 import zoneinfo
 from datetime import datetime
 from pathlib import Path
@@ -121,7 +122,6 @@ async def summarize_messages(
 
     Returns ``(summary_text, completion_tokens)``.
     """
-    import time
     from agent.core.llm_params import _resolve_llm_params
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
