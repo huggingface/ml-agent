@@ -1578,7 +1578,7 @@ async def submission_loop(
     logger.info("Agent loop started")
 
     # Retry any failed uploads from previous sessions (fire-and-forget)
-    if config and config.save_sessions:
+    if config and config.save_sessions and config.upload_sessions:
         Session.retry_failed_uploads_detached(
             directory="session_logs", repo_id=config.session_dataset_repo
         )

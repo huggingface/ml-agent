@@ -145,7 +145,7 @@ class ContextManager:
     ):
         self.system_prompt = self._load_system_prompt(
             tool_specs or [],
-            prompt_file_suffix="system_prompt_v3.yaml",
+            prompt_file_suffix=prompt_file_suffix,
             hf_token=hf_token,
             local_mode=local_mode,
         )
@@ -169,7 +169,11 @@ class ContextManager:
         local_mode: bool = False,
     ):
         """Load and render the system prompt from YAML file with Jinja2"""
-        prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
+        configured_path = Path(prompt_file_suffix)
+        if configured_path.is_absolute() or configured_path.parent != Path("."):
+            prompt_file = configured_path
+        else:
+            prompt_file = Path(__file__).parent.parent / "prompts" / prompt_file_suffix
 
         with open(prompt_file, "r") as f:
             prompt_data = yaml.safe_load(f)

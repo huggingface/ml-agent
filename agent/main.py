@@ -55,6 +55,12 @@ litellm.suppress_debug_info = True
 CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
 
 
+def _load_cli_config(config_path: str | Path):
+    path = Path(config_path)
+    include_user_defaults = path.resolve() == CLI_CONFIG_PATH.resolve()
+    return load_config(str(path), include_user_defaults=include_user_defaults)
+
+
 def _configure_runtime_logging() -> None:
     """Keep third-party warning spam from punching through the interactive UI."""
     import logging
@@ -811,7 +817,7 @@ async def _handle_slash_command(
     return None
 
 
-async def main(model: str | None = None):
+async def main(model: str | None = None, config_path: str | Path = CLI_CONFIG_PATH):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -825,7 +831,7 @@ async def main(model: str | None = None):
     if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
-    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+    config = _load_cli_config(config_path)
     if model:
         config.model_name = model
 
@@ -851,7 +857,12 @@ async def main(model: str | None = None):
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()
     # Create tool router with local mode
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
+    tool_router = ToolRouter(
+        config.mcpServers,
+        hf_token=hf_token,
+        local_mode=True,
+        disabled_tools=config.disabled_tools,
+    )
 
     # Session holder for interrupt/model/status access
     session_holder = [None]
@@ -1039,6 +1050,7 @@ async def headless_main(
     model: str | None = None,
     max_iterations: int | None = None,
     stream: bool = True,
+    config_path: str | Path = CLI_CONFIG_PATH,
 ) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
@@ -1053,7 +1065,7 @@ async def headless_main(
 
     print(f"HF token loaded", file=sys.stderr)
 
-    config = load_config(CLI_CONFIG_PATH, include_user_defaults=True)
+    config = _load_cli_config(config_path)
     config.yolo_mode = True  # Auto-approve everything in headless mode
     notification_gateway = NotificationGateway(config.messaging)
     await notification_gateway.start()
@@ -1073,7 +1085,12 @@ async def headless_main(
     submission_queue: asyncio.Queue = asyncio.Queue()
     event_queue: asyncio.Queue = asyncio.Queue()
 
-    tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
+    tool_router = ToolRouter(
+        config.mcpServers,
+        hf_token=hf_token,
+        local_mode=True,
+        disabled_tools=config.disabled_tools,
+    )
     session_holder: list = [None]
 
     agent_task = asyncio.create_task(
@@ -1251,6 +1268,8 @@ def cli():
     parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
     parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
     parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
+    parser.add_argument("--config", default=str(CLI_CONFIG_PATH),
+                        help="Path to agent config JSON")
     parser.add_argument("--max-iterations", type=int, default=None,
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     parser.add_argument("--no-stream", action="store_true",
@@ -1262,9 +1281,15 @@ def cli():
             max_iter = args.max_iterations
             if max_iter is not None and max_iter < 0:
                 max_iter = 10_000  # effectively unlimited
-            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
+            asyncio.run(headless_main(
+                args.prompt,
+                model=args.model,
+                max_iterations=max_iter,
+                stream=not args.no_stream,
+                config_path=args.config,
+            ))
         else:
-            asyncio.run(main(model=args.model))
+            asyncio.run(main(model=args.model, config_path=args.config))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 

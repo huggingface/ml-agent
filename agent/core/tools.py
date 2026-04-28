@@ -131,11 +131,21 @@ class ToolRouter:
     Based on codex-rs/core/src/tools/router.rs
     """
 
-    def __init__(self, mcp_servers: dict[str, MCPServerConfig], hf_token: str | None = None, local_mode: bool = False):
+    def __init__(
+        self,
+        mcp_servers: dict[str, MCPServerConfig],
+        hf_token: str | None = None,
+        local_mode: bool = False,
+        disabled_tools: list[str] | None = None,
+    ):
         self.tools: dict[str, ToolSpec] = {}
         self.mcp_servers: dict[str, dict[str, Any]] = {}
+        self.disabled_tools = set(disabled_tools or [])
 
-        for tool in create_builtin_tools(local_mode=local_mode):
+        for tool in create_builtin_tools(
+            local_mode=local_mode,
+            disabled_tools=self.disabled_tools,
+        ):
             self.register_tool(tool)
 
         self.mcp_client: Client | None = None
@@ -157,7 +167,7 @@ class ToolRouter:
         registered_names = []
         skipped_count = 0
         for tool in tools:
-            if tool.name in NOT_ALLOWED_TOOL_NAMES:
+            if tool.name in NOT_ALLOWED_TOOL_NAMES or tool.name in self.disabled_tools:
                 skipped_count += 1
                 continue
             registered_names.append(tool.name)
@@ -182,6 +192,8 @@ class ToolRouter:
 
         try:
             openapi_spec = await _get_api_search_tool_spec()
+            if openapi_spec["name"] in self.disabled_tools:
+                return
             self.register_tool(
                 ToolSpec(
                     name=openapi_spec["name"],
@@ -281,7 +293,10 @@ class ToolRouter:
 # ============================================================================
 
 
-def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
+def create_builtin_tools(
+    local_mode: bool = False,
+    disabled_tools: set[str] | list[str] | None = None,
+) -> list[ToolSpec]:
     """Create built-in tool specifications"""
     # in order of importance
     tools = [
@@ -383,6 +398,10 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
         tools = get_local_tools() + tools
     else:
         tools = get_sandbox_tools() + tools
+
+    disabled = set(disabled_tools or [])
+    if disabled:
+        tools = [tool for tool in tools if tool.name not in disabled]
 
     tool_names = ", ".join([t.name for t in tools])
     logger.info(f"Loaded {len(tools)} built-in tools: {tool_names}")
