@@ -28,6 +28,7 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+GEMINI_API_KEY=<your-gemini-api-key> # if using gemini models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```

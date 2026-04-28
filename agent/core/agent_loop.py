@@ -309,6 +309,7 @@ def _friendly_error_message(error: Exception) -> str | None:
             "Authentication failed — your API key is missing or invalid.\n\n"
             "To fix this, set the API key for your model provider:\n"
             "  • Anthropic:   export ANTHROPIC_API_KEY=sk-...\n"
+            "  • Gemini:      export GEMINI_API_KEY=...\n"
             "  • OpenAI:      export OPENAI_API_KEY=sk-...\n"
             "  • HF Router:   export HF_TOKEN=hf_...\n\n"
             "You can also add it to a .env file in the project root.\n"
