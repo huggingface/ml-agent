@@ -1,188 +1,157 @@
-import { useEffect, useState } from 'react';
 import {
   Box,
   Button,
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
-  FormControl,
-  MenuItem,
-  Select,
   Typography,
 } from '@mui/material';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import CreditCardIcon from '@mui/icons-material/CreditCard';
+import ReplayIcon from '@mui/icons-material/Replay';
 
-const HF_PRICING_URL = 'https://huggingface.co/pricing';
+const HF_BILLING_URL = 'https://huggingface.co/settings/billing';
+const HF_ORANGE = '#FF9D00';
 
 interface JobsUpgradeDialogProps {
   open: boolean;
-  mode: 'upgrade' | 'namespace';
   message: string;
-  eligibleNamespaces: string[];
+  /** True after the user clicked "Add credits" — switches the dialog into retry mode. */
+  awaitingTopUp: boolean;
   onUpgrade: () => void;
-  onDecline: () => void;
+  onRetry: () => void;
   onClose: () => void;
-  onContinueWithNamespace: (namespace: string) => void;
 }
 
 export default function JobsUpgradeDialog({
   open,
-  mode,
   message,
-  eligibleNamespaces,
+  awaitingTopUp,
   onUpgrade,
-  onDecline,
+  onRetry,
   onClose,
-  onContinueWithNamespace,
 }: JobsUpgradeDialogProps) {
-  const [selectedNamespace, setSelectedNamespace] = useState(() => eligibleNamespaces[0] || '');
-
-  useEffect(() => {
-    if (!open) return;
-    setSelectedNamespace(eligibleNamespaces[0] || '');
-  }, [open, eligibleNamespaces]);
-
-  const isNamespace = mode === 'namespace';
-  const title = isNamespace ? 'Run jobs as' : 'Jobs need Pro or a paid org';
-
-  const body = isNamespace
-    ? "Pick which paid organization should pay for and own this job. We'll use the same one for the rest of this browser."
-    : message;
-
   return (
     <Dialog
       open={open}
       onClose={onClose}
       slotProps={{
-        backdrop: { sx: { backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' } },
+        backdrop: {
+          sx: { backgroundColor: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)' },
+        },
       }}
       PaperProps={{
         sx: {
           bgcolor: 'var(--panel)',
           border: '1px solid var(--border)',
           borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--shadow-1)',
+          boxShadow: '0 30px 80px rgba(0,0,0,0.45), var(--shadow-1)',
           maxWidth: 460,
+          width: '100%',
           mx: 2,
+          overflow: 'hidden',
         },
       }}
     >
+      <Box
+        sx={{
+          height: 4,
+          background: `linear-gradient(90deg, ${HF_ORANGE} 0%, #FFC560 50%, ${HF_ORANGE} 100%)`,
+        }}
+      />
+
       <DialogTitle
-        sx={{ color: 'var(--text)', fontWeight: 700, fontSize: '1rem', pt: 2.5, pb: 0, px: 3 }}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1.25,
+          color: 'var(--text)',
+          fontWeight: 800,
+          fontSize: '1.05rem',
+          pt: 2.5,
+          pb: 0.5,
+          px: 3,
+          letterSpacing: '-0.01em',
+        }}
       >
-        {title}
+        <Box
+          sx={{
+            width: 32,
+            height: 32,
+            borderRadius: '10px',
+            bgcolor: 'rgba(255, 157, 0, 0.15)',
+            color: HF_ORANGE,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <CreditCardIcon sx={{ fontSize: 18 }} />
+        </Box>
+        {awaitingTopUp ? 'Topped up?' : 'Top up to launch'}
       </DialogTitle>
       <DialogContent sx={{ px: 3, pt: 1.25, pb: 0 }}>
-        <DialogContentText
-          sx={{ color: 'var(--muted-text)', fontSize: '0.85rem', lineHeight: 1.6 }}
+        <Typography
+          sx={{
+            color: 'var(--muted-text)',
+            fontSize: '0.85rem',
+            lineHeight: 1.6,
+            mb: 1.5,
+          }}
         >
-          {body}
-        </DialogContentText>
-
-        {isNamespace ? (
-          <FormControl fullWidth size="small" sx={{ mt: 2 }}>
-            <Select
-              value={selectedNamespace}
-              displayEmpty
-              onChange={(e) => setSelectedNamespace(String(e.target.value))}
-              sx={{
-                bgcolor: 'var(--composer-bg)',
-                color: 'var(--text)',
-                fontSize: '0.88rem',
-                fontWeight: 600,
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: 'var(--border)' },
-                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'var(--border)' },
-                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'var(--accent-yellow)',
-                  borderWidth: 1,
-                },
-                '& .MuiSelect-icon': { color: 'var(--muted-text)' },
-              }}
-              MenuProps={{
-                PaperProps: {
-                  sx: {
-                    bgcolor: 'var(--panel)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    mt: 0.5,
-                  },
-                },
-              }}
-            >
-              {eligibleNamespaces.map((namespace) => (
-                <MenuItem
-                  key={namespace}
-                  value={namespace}
-                  sx={{
-                    fontSize: '0.88rem',
-                    color: 'var(--text)',
-                    '&.Mui-selected': { bgcolor: 'rgba(255,255,255,0.05)' },
-                  }}
-                >
-                  {namespace}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        ) : (
-          eligibleNamespaces.length > 0 && (
-            <Box sx={{ mt: 1.5 }}>
-              <Typography
-                variant="caption"
-                sx={{ color: 'var(--muted-text)', fontSize: '0.78rem', lineHeight: 1.55 }}
-              >
-                Eligible namespaces: {eligibleNamespaces.join(', ')}
-              </Typography>
-            </Box>
-          )
-        )}
+          {awaitingTopUp
+            ? "We'll auto-retry the job as soon as you switch back from the billing tab. Or hit the button below now."
+            : message ||
+              'Hugging Face Jobs need credits on the namespace running them. Add some, then re-run the same job — the agent will pick it back up.'}
+        </Typography>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5, pt: 2.5, gap: 1 }}>
-        {isNamespace ? (
+        {awaitingTopUp ? (
           <Button
-            onClick={() => onContinueWithNamespace(selectedNamespace)}
-            disabled={!selectedNamespace}
+            onClick={onRetry}
+            startIcon={<ReplayIcon sx={{ fontSize: 16 }} />}
             variant="contained"
             size="small"
             sx={{
               fontSize: '0.82rem',
               px: 2.5,
-              bgcolor: 'var(--accent-yellow)',
+              bgcolor: HF_ORANGE,
               color: '#000',
               textTransform: 'none',
               fontWeight: 700,
-              boxShadow: 'none',
-              '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
+              boxShadow: '0 6px 18px rgba(255, 157, 0, 0.35)',
+              '&:hover': { bgcolor: '#FFB340', boxShadow: '0 8px 22px rgba(255, 157, 0, 0.45)' },
             }}
           >
-            Continue
+            Retry now
           </Button>
         ) : (
           <Button
             component="a"
-            href={HF_PRICING_URL}
+            href={HF_BILLING_URL}
             target="_blank"
             rel="noopener noreferrer"
             onClick={onUpgrade}
+            startIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
             variant="contained"
             size="small"
             sx={{
               fontSize: '0.82rem',
               px: 2.5,
-              bgcolor: 'var(--accent-yellow)',
+              bgcolor: HF_ORANGE,
               color: '#000',
               textTransform: 'none',
               fontWeight: 700,
-              boxShadow: 'none',
-              '&:hover': { bgcolor: '#FFB340', boxShadow: 'none' },
+              boxShadow: '0 6px 18px rgba(255, 157, 0, 0.35)',
+              '&:hover': { bgcolor: '#FFB340', boxShadow: '0 8px 22px rgba(255, 157, 0, 0.45)' },
             }}
           >
-            Upgrade to Pro
+            Add credits
           </Button>
         )}
         <Button
-          onClick={onDecline}
+          onClick={onClose}
           size="small"
           sx={{
             color: 'var(--muted-text)',
@@ -192,7 +161,7 @@ export default function JobsUpgradeDialog({
             '&:hover': { bgcolor: 'var(--hover-bg)' },
           }}
         >
-          {isNamespace ? 'Skip this tool call' : 'Decline tool call'}
+          Close
         </Button>
       </DialogActions>
     </Dialog>

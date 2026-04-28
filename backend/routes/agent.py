@@ -139,108 +139,6 @@ async def _enforce_claude_quota(
     await session_manager.persist_session_snapshot(agent_session)
 
 
-async def _enforce_jobs_access_for_approvals(
-    user: dict[str, Any],
-    agent_session: AgentSession,
-    approvals: list[dict[str, Any]],
-) -> None:
-    """Block approved hf_jobs tool calls when the user has no eligible jobs namespace."""
-    pending = agent_session.session.pending_approval or {}
-    tool_calls = pending.get("tool_calls") or []
-    if not tool_calls:
-        return
-
-    approved_ids = {
-        a.get("tool_call_id")
-        for a in approvals
-        if a.get("approved")
-    }
-    if not approved_ids:
-        return
-
-    hf_job_ids = [
-        tc.id for tc in tool_calls
-        if tc.id in approved_ids and tc.function.name == "hf_jobs"
-    ]
-    if not hf_job_ids:
-        return
-
-    token = agent_session.hf_token or agent_session.session.hf_token
-    if not token:
-        return
-
-    access = await get_jobs_access(token)
-    if access is None:
-        return
-
-    approval_map = {a.get("tool_call_id"): a for a in approvals}
-    if access.personal_can_run_jobs:
-        return
-
-    if access.paid_org_names:
-        invalid_namespace = [
-            tool_call_id
-            for tool_call_id in hf_job_ids
-            if (
-                approval_map.get(tool_call_id, {}).get("namespace")
-                and approval_map.get(tool_call_id, {}).get("namespace") not in access.paid_org_names
-            )
-        ]
-        if invalid_namespace:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "hf_jobs_invalid_namespace",
-                    "message": (
-                        "The selected jobs namespace is not one of your eligible paid organizations. "
-                        f"Allowed namespaces: {', '.join(access.paid_org_names)}"
-                    ),
-                    "plan": user.get("plan", "free"),
-                    "tool_call_ids": invalid_namespace,
-                    "eligible_namespaces": access.paid_org_names,
-                },
-            )
-        missing_namespace = [
-            tool_call_id
-            for tool_call_id in hf_job_ids
-            if not approval_map.get(tool_call_id, {}).get("namespace")
-        ]
-        if missing_namespace:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "hf_jobs_namespace_required",
-                    "message": "Choose which paid organization should own this job run.",
-                    "plan": user.get("plan", "free"),
-                    "tool_call_ids": missing_namespace,
-                    "eligible_namespaces": access.paid_org_names,
-                },
-            )
-        return
-
-    from agent.core import telemetry
-    await telemetry.record_jobs_access_blocked(
-        agent_session.session,
-        tool_call_ids=hf_job_ids,
-        plan=user.get("plan", "free"),
-        eligible_namespaces=access.eligible_namespaces,
-    )
-
-    raise HTTPException(
-        status_code=402,
-        detail={
-            "error": "hf_jobs_upgrade_required",
-            "message": (
-                "Hugging Face Jobs are available only to Pro users and Team or Enterprise organizations. "
-                "Upgrade to Pro, or decline the job tool call so the agent can choose another path."
-            ),
-            "plan": user.get("plan", "free"),
-            "tool_call_ids": hf_job_ids,
-            "eligible_namespaces": access.eligible_namespaces,
-        },
-    )
-
-
 async def _check_session_access(
     session_id: str,
     user: dict[str, Any],
@@ -573,15 +471,19 @@ async def get_user_quota(user: dict = Depends(get_current_user)) -> dict:
 
 @router.get("/user/jobs-access")
 async def get_jobs_access_info(request: Request, user: dict = Depends(get_current_user)) -> dict:
-    """Return whether the current token can run HF Jobs and under which namespaces."""
+    """Return the namespaces the current token can run HF Jobs under.
+
+    Credits are enforced by the HF API at job-creation time, not here —
+    the response only describes which wallets the caller is allowed to
+    pick from. Pro is irrelevant.
+    """
     token = resolve_hf_request_token(request)
 
     access = await get_jobs_access(token or "")
     return {
-        "plan": user.get("plan", "free"),
-        "can_run_jobs": bool(access and (access.personal_can_run_jobs or access.paid_org_names)),
         "eligible_namespaces": access.eligible_namespaces if access else [],
         "default_namespace": access.default_namespace if access else None,
+        "billing_url": "https://huggingface.co/settings/billing",
     }
 
 
@@ -633,7 +535,6 @@ async def submit_approval(
         }
         for a in request.approvals
     ]
-    await _enforce_jobs_access_for_approvals(user, agent_session, approvals)
     success = await session_manager.submit_approval(request.session_id, approvals)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
@@ -685,7 +586,6 @@ async def chat_sse(
                 }
                 for a in approvals
             ]
-            await _enforce_jobs_access_for_approvals(user, agent_session, formatted)
             success = await session_manager.submit_approval(session_id, formatted)
         elif text is not None:
             success = await session_manager.submit_user_input(session_id, text)
