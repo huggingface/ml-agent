@@ -43,9 +43,11 @@ EVAL_DIR="${RUN_ROOT}/results/${METHOD_DIR}/${BENCHMARK}_${MODEL_SAFE}_${TASK_RU
 TMP_SUBDIR="/tmp/ml_intern_ptb_${BENCHMARK}_${MODEL_SAFE}_${TASK_RUN_ID}"
 JOB_DIR="${TMP_SUBDIR}/job_dir"
 JOB_TMP="${TMP_SUBDIR}/tmp"
+JOB_REPO="${TMP_SUBDIR}/ml-intern-src"
 
 rm -rf "$TMP_SUBDIR"
-mkdir -p "$EVAL_DIR" "$JOB_DIR/task" "$JOB_TMP" "$HF_HOME_HOST"
+mkdir -p "$EVAL_DIR" "$JOB_DIR/task" "$JOB_TMP" "$JOB_REPO" "$HF_HOME_HOST"
+cp -a "$REPO_ROOT/." "$JOB_REPO/"
 
 exec > >(tee "$EVAL_DIR/output.log")
 exec 2> >(tee "$EVAL_DIR/error.log" >&2)
@@ -103,7 +105,7 @@ fi
 TIMER
 chmod +x "$JOB_DIR/task/timer.sh"
 
-CONTAINER_MOUNTS="${REPO_ROOT}:/ml-intern-src,${PTB_DIR}:/posttrainbench,${JOB_DIR}:/workspace,${JOB_TMP}:/tmp,${HF_HOME_HOST}:/hf-cache,${EVAL_DIR}:/result"
+CONTAINER_MOUNTS="${JOB_REPO}:/ml-intern-src,${PTB_DIR}:/posttrainbench,${JOB_DIR}:/workspace,${JOB_TMP}:/tmp,${HF_HOME_HOST}:/hf-cache,${EVAL_DIR}:/result"
 CONTAINER_ENV="HF_TOKEN,HUGGING_FACE_HUB_TOKEN,ANTHROPIC_API_KEY,OPENAI_API_KEY,GEMINI_API_KEY,INFERENCE_TOKEN,HF_BILL_TO,ML_INTERN_AGENT_MODEL,PROMPT"
 
 run_in_container() {
@@ -140,7 +142,7 @@ timeout --signal=TERM --kill-after=30s "$((DURATION_MINUTES + 5))m" \
         uv pip install --system -e .
         cd /workspace/task
         python -m agent.main \
-            --config /ml-intern-src/post_train_bench/ml_intern_posttrain_config.json \
+            --config /ml-intern-src/post_train_bench/ml_intern_config.json \
             --model "$ML_INTERN_AGENT_MODEL" \
             --max-iterations -1 \
             "$PROMPT"

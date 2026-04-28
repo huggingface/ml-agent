@@ -25,6 +25,9 @@ fi
 if [ -z "${MATRIX_FILE:-}" ]; then
     MATRIX_FILE="${RUN_ROOT}/matrix.jsonl"
 fi
+if [ -z "${REPO_ROOT:-}" ]; then
+    REPO_ROOT="${RUN_ROOT}/source_snapshot"
+fi
 export RUN_ROOT
 export RUN_ID="${RUN_ID:-$(basename "$RUN_ROOT")}"
 

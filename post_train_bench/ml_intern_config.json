@@ -9,7 +9,7 @@
   "reasoning_effort": "max",
   "confirm_cpu_jobs": false,
   "auto_file_upload": false,
-  "system_prompt_file": "/ml-intern-src/post_train_bench/system_prompt_posttrain.yaml",
+  "system_prompt_file": "/ml-intern-src/post_train_bench/system_prompt.yaml",
   "disabled_tools": [
     "hf_jobs",
     "notify",

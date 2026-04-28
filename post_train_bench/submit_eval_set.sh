@@ -50,8 +50,8 @@ done
 
 export ML_INTERN_AGENT_MODEL="${ML_INTERN_AGENT_MODEL:-anthropic/claude-opus-4-6}"
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+HOST_REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$HOST_REPO_ROOT"
 
 PTB_DIR="${POST_TRAIN_BENCH_DIR:-scratch/PostTrainBench}"
 if [ ! -d "$PTB_DIR/src/eval/tasks" ]; then
@@ -61,7 +61,7 @@ fi
 PTB_DIR="$(cd "$PTB_DIR" && pwd)"
 
 RUN_STAMP="${POST_TRAIN_BENCH_RUN_STAMP:-$(date -u +%Y-%m-%d_%H-%M-%S)}"
-RUN_PARENT="${REPO_ROOT}/post_train_bench/runs/${ML_INTERN_AGENT_MODEL}"
+RUN_PARENT="${HOST_REPO_ROOT}/post_train_bench/runs/${ML_INTERN_AGENT_MODEL}"
 EXPLICIT_RUN_ID="${POST_TRAIN_BENCH_RUN_ID:-}"
 DOCKER_IMAGE="${POST_TRAIN_BENCH_DOCKER_IMAGE:-registry.hpc-cluster-hopper.hpc.internal.huggingface.tech/library/posttrainbench:latest}"
 PTB_SLURM_JOB_ID=""
@@ -135,8 +135,16 @@ esac
 
 MATRIX_COUNT="$(wc -l < "$MATRIX_FILE" | tr -d ' ')"
 
+create_source_snapshot() {
+    SOURCE_SNAPSHOT="${RUN_ROOT}/source_snapshot"
+    rm -rf "$SOURCE_SNAPSHOT"
+    mkdir -p "$SOURCE_SNAPSHOT"
+    git archive --format=tar HEAD | tar -xf - -C "$SOURCE_SNAPSHOT"
+    export SOURCE_SNAPSHOT
+}
+
 write_metadata() {
-    export RUN_ID MODE DOCKER_IMAGE PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID
+    export RUN_ID MODE DOCKER_IMAGE PTB_DIR MATRIX_FILE MATRIX_COUNT RUN_STAMP PTB_SLURM_JOB_ID SOURCE_SNAPSHOT
     python - "$RUN_ROOT/run_metadata.json" <<'PY'
 import json
 import os
@@ -165,32 +173,23 @@ metadata = {
     "post_train_bench_dir": os.environ["PTB_DIR"],
     "matrix_file": os.environ["MATRIX_FILE"],
     "matrix_count": int(os.environ["MATRIX_COUNT"]),
+    "source_snapshot": os.environ.get("SOURCE_SNAPSHOT") or None,
 }
 Path(sys.argv[1]).write_text(json.dumps(metadata, indent=2) + "\n")
 PY
     env | sort > "$RUN_ROOT/env/submit_env.txt"
 }
 
-if [ -n "$EXPLICIT_RUN_ID" ]; then
-    SBATCH_CMD=(
-        sbatch
-        --parsable
-        "--array=0-$((MATRIX_COUNT - 1))"
-        "--export=ALL,RUN_ROOT=${RUN_ROOT},MATRIX_FILE=${MATRIX_FILE},PTB_DIR=${PTB_DIR},REPO_ROOT=${REPO_ROOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},RUN_ID=${RUN_ID}"
-        post_train_bench/launch.slurm
-    )
-else
+if [ "$DRY_RUN" -eq 1 ]; then
+    SOURCE_SNAPSHOT="${RUN_ROOT}/source_snapshot"
     SBATCH_CMD=(
         sbatch
         --parsable
         --hold
         "--array=0-$((MATRIX_COUNT - 1))"
-        "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},REPO_ROOT=${REPO_ROOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE}"
+        "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE}"
         post_train_bench/launch.slurm
     )
-fi
-
-if [ "$DRY_RUN" -eq 1 ]; then
     write_metadata
     printf '%q ' "${SBATCH_CMD[@]}" > "$RUN_ROOT/sbatch_command.txt"
     printf '\n' >> "$RUN_ROOT/sbatch_command.txt"
@@ -202,6 +201,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 if [ -n "$EXPLICIT_RUN_ID" ]; then
+    create_source_snapshot
+    SBATCH_CMD=(
+        sbatch
+        --parsable
+        "--array=0-$((MATRIX_COUNT - 1))"
+        "--export=ALL,RUN_ROOT=${RUN_ROOT},MATRIX_FILE=${MATRIX_FILE},PTB_DIR=${PTB_DIR},REPO_ROOT=${SOURCE_SNAPSHOT},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE},RUN_ID=${RUN_ID}"
+        post_train_bench/launch.slurm
+    )
     write_metadata
     printf '%q ' "${SBATCH_CMD[@]}" > "$RUN_ROOT/sbatch_command.txt"
     printf '\n' >> "$RUN_ROOT/sbatch_command.txt"
@@ -215,6 +222,14 @@ if [ -n "$EXPLICIT_RUN_ID" ]; then
     exit 0
 fi
 
+SBATCH_CMD=(
+    sbatch
+    --parsable
+    --hold
+    "--array=0-$((MATRIX_COUNT - 1))"
+    "--export=ALL,RUN_PARENT=${RUN_PARENT},RUN_STAMP=${RUN_STAMP},PTB_DIR=${PTB_DIR},POST_TRAIN_BENCH_DOCKER_IMAGE=${DOCKER_IMAGE}"
+    post_train_bench/launch.slurm
+)
 SBATCH_RESULT="$("${SBATCH_CMD[@]}")"
 PTB_SLURM_JOB_ID="${SBATCH_RESULT%%;*}"
 RUN_ID="${RUN_STAMP}_${PTB_SLURM_JOB_ID}"
@@ -230,6 +245,7 @@ mkdir -p "$RUN_ROOT"/{slurm,results,artifacts,env}
 mv "$MATRIX_FILE" "$RUN_ROOT/matrix.jsonl"
 rmdir "$PENDING_ROOT" 2>/dev/null || true
 MATRIX_FILE="$RUN_ROOT/matrix.jsonl"
+create_source_snapshot
 
 write_metadata
 printf '%q ' "${SBATCH_CMD[@]}" > "$RUN_ROOT/sbatch_command.txt"
