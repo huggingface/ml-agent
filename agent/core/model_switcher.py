@@ -193,7 +193,7 @@ async def probe_and_switch_model(
 
     console.print(f"[dim]checking {model_id} (effort: {preference})...[/dim]")
     try:
-        outcome = await probe_effort(model_id, preference, hf_token)
+        outcome = await probe_effort(model_id, preference, hf_token, session=session)
     except ProbeInconclusive as e:
         _commit_switch(model_id, config, session, effective=None, cache=False)
         console.print(

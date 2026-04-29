@@ -282,6 +282,7 @@ async def _heal_effort_and_rebuild_params(
         try:
             outcome = await probe_effort(
                 model, session.config.reasoning_effort, session.hf_token,
+                session=session,
             )
             session.model_effective_effort[model] = outcome.effective_effort
             logger.info(
@@ -355,6 +356,7 @@ async def _compact_and_notify(session: Session) -> None:
         model_name=session.config.model_name,
         tool_specs=session.tool_router.get_tool_specs_for_llm(),
         hf_token=session.hf_token,
+        session=session,
     )
     new_usage = cm.running_context_usage
     if new_usage != old_usage:

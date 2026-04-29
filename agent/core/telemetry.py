@@ -78,9 +78,29 @@ async def record_llm_call(
     response: Any = None,
     latency_ms: int,
     finish_reason: str | None,
+    kind: str = "main",
 ) -> dict:
     """Emit an ``llm_call`` event and return the extracted usage dict so
-    callers can stash it on their result object if they want."""
+    callers can stash it on their result object if they want.
+
+    ``kind`` tags the call site so downstream analytics can break spend
+    down by category. Values currently emitted by the codebase:
+
+    * ``main``        — agent loop turn (user-facing reply or tool follow-up)
+    * ``research``    — research sub-agent inner loop (3 call sites)
+    * ``compaction``  — context-window summary on overflow
+    * ``effort_probe``— effort cascade walk on rejection / model switch
+    * ``restore``     — session re-seed summary after a Space restart
+
+    Pre-2026-04-29 only ``main`` calls were instrumented; observed gap on
+    Cost Explorer was ~67%, with the other 5 call sites accounting for
+    the rest. Tagging lets us split the dataset's ``total_cost_usd`` by
+    category and validate against AWS billing.
+
+    The ``/title`` (HF Router, not Bedrock) and ``/health/llm`` (diagnostic
+    endpoint, no session context) call sites are intentionally not
+    instrumented — together they're <1% of spend.
+    """
     usage = extract_usage(response) if response is not None else {}
     cost_usd = 0.0
     if response is not None:
@@ -98,6 +118,7 @@ async def record_llm_call(
                 "latency_ms": latency_ms,
                 "finish_reason": finish_reason,
                 "cost_usd": cost_usd,
+                "kind": kind,
                 **usage,
             },
         ))
