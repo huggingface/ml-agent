@@ -41,8 +41,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
-BEDROCK_CLAUDE_MODEL_ID = "bedrock/us.anthropic.claude-opus-4-6-v1"
-PREMIUM_GATED_MODEL_IDS = {"openai/gpt-5.5"}
+DEFAULT_CLAUDE_MODEL_ID = "bedrock/us.anthropic.claude-opus-4-6-v1"
+GATED_MODEL_IDS = {
+    DEFAULT_CLAUDE_MODEL_ID,
+    "openai/gpt-5.5",
+}
 
 
 def _claude_picker_model_id() -> str:
@@ -52,7 +55,7 @@ def _claude_picker_model_id() -> str:
     Claude endpoint between production Bedrock and local Anthropic. Other
     models are selected through the model switcher.
     """
-    return session_manager.config.model_name or BEDROCK_CLAUDE_MODEL_ID
+    return session_manager.config.model_name
 
 
 def _available_models() -> list[dict[str, Any]]:
@@ -96,24 +99,22 @@ def _available_models() -> list[dict[str, Any]]:
 AVAILABLE_MODELS = _available_models()
 
 
-def _is_anthropic_model(model_id: str) -> bool:
-    return "anthropic" in model_id
+def _is_gated_model(model_id: str) -> bool:
+    return model_id in GATED_MODEL_IDS
 
 
-def _is_premium_model(model_id: str) -> bool:
-    return _is_anthropic_model(model_id) or model_id in PREMIUM_GATED_MODEL_IDS
+async def _require_hf_for_gated_model(request: Request, model_id: str) -> None:
+    """403 if a non-``huggingface``-org user tries to select a gated model.
 
-
-async def _require_hf_for_premium_model(request: Request, model_id: str) -> None:
-    """403 if a non-``huggingface``-org user tries to select a premium model.
-
-    Premium models are billed through service-owned provider credentials or
-    otherwise costly endpoints. The gate only fires for those models so
-    non-HF users can still freely switch between the free models.
+    Gated models are deployed paid endpoints backed by service-owned
+    credentials. Direct ``anthropic/...`` is intentionally not covered here:
+    that path is for local development with a developer's own Anthropic key.
+    The gate only fires for deployed paid models so non-HF users can still
+    freely switch between the free models.
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
     """
-    if not _is_premium_model(model_id):
+    if not _is_gated_model(model_id):
         return
     if not await require_huggingface_org_member(request):
         raise HTTPException(
@@ -128,25 +129,25 @@ async def _require_hf_for_premium_model(request: Request, model_id: str) -> None
         )
 
 
-async def _enforce_premium_model_quota(
+async def _enforce_gated_model_quota(
     user: dict[str, Any],
     agent_session: AgentSession,
 ) -> None:
-    """Charge the user's daily premium-model quota on first use in a session.
+    """Charge the user's daily gated-model quota on first use in a session.
 
     Runs at *message-submit* time, not session-create time — so spinning up a
-    premium-model session to look around doesn't burn quota. The
+    gated-model session to look around doesn't burn quota. The
     ``claude_counted`` flag on ``AgentSession`` guards against re-counting the
     same session; the stored field name is kept for persistence compatibility.
 
-    No-ops when the session's current model isn't premium, or when this
+    No-ops when the session's current model isn't gated, or when this
     session has already been charged. Raises 429 when the user has hit
     their daily cap.
     """
     if agent_session.claude_counted:
         return
     model_name = agent_session.session.config.model_name
-    if not _is_premium_model(model_name):
+    if not _is_gated_model(model_name):
         return
     user_id = user["user_id"]
     cap = user_quotas.daily_cap_for(user.get("plan"))
@@ -335,7 +336,7 @@ async def create_session(
     behalf of the user.
 
     Optional body ``{"model"?: <id>}`` selects the session's LLM; unknown
-    ids are rejected (400). The premium-model quota gate runs at message-submit
+    ids are rejected (400). The gated-model quota runs at message-submit
     time, not here — spinning up a session to look around is free.
 
     Returns 503 if the server or user has reached the session limit.
@@ -356,9 +357,9 @@ async def create_session(
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
-    # Premium models are gated to HF staff; free models pass through.
+    # Deployed paid models are gated to HF staff; free and local-dev models pass through.
     resolved_model = model or session_manager.config.model_name
-    await _require_hf_for_premium_model(request, resolved_model)
+    await _require_hf_for_gated_model(request, resolved_model)
 
     try:
         session_id = await session_manager.create_session(
@@ -383,7 +384,7 @@ async def restore_session_summary(
     session's context as a user-role system note.
 
     Optional ``"model"`` in the body overrides the session's LLM. The
-    premium-model quota gate runs at message-submit time, not here.
+    gated-model quota runs at message-submit time, not here.
     """
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -397,7 +398,7 @@ async def restore_session_summary(
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
     resolved_model = model or session_manager.config.model_name
-    await _require_hf_for_premium_model(request, resolved_model)
+    await _require_hf_for_gated_model(request, resolved_model)
 
     try:
         session_id = await session_manager.create_session(
@@ -445,10 +446,10 @@ async def set_session_model(
 
     Takes effect on the next LLM call in that session — other sessions
     (including other browser tabs) are unaffected. Model switches don't
-    charge quota — the premium-model quota gate only fires at message-submit time.
+    charge quota — the gated-model quota only fires at message-submit time.
 
-    Switching TO a premium model requires HF org membership; free-model
-    switches are unrestricted.
+    Switching TO a gated deployed model requires HF org membership; free-model
+    and local-dev direct provider switches are unrestricted.
     """
     agent_session = await _check_session_access(session_id, user, request)
     model_id = body.get("model")
@@ -457,7 +458,7 @@ async def set_session_model(
     valid_ids = {m["id"] for m in AVAILABLE_MODELS}
     if model_id not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
-    await _require_hf_for_premium_model(request, model_id)
+    await _require_hf_for_gated_model(request, model_id)
     if not agent_session:
         raise HTTPException(status_code=404, detail="Session not found")
     await session_manager.update_session_model(session_id, model_id)
@@ -547,7 +548,7 @@ async def submit_input(
 ) -> dict:
     """Submit user input to a session. Only accessible by the session owner."""
     agent_session = await _check_session_access(request.session_id, user)
-    await _enforce_premium_model_quota(user, agent_session)
+    await _enforce_gated_model_quota(user, agent_session)
     success = await session_manager.submit_user_input(request.session_id, request.text)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found or inactive")
@@ -599,12 +600,12 @@ async def chat_sse(
     text = body.get("text")
     approvals = body.get("approvals")
 
-    # Gate user-message sends against the daily premium-model quota. Approvals are
+    # Gate user-message sends against the daily gated-model quota. Approvals are
     # continuations of an in-progress turn — the session was already charged
     # on its first message, so we skip the gate there.
     if text is not None and not approvals:
         try:
-            await _enforce_premium_model_quota(user, agent_session)
+            await _enforce_gated_model_quota(user, agent_session)
         except HTTPException:
             broadcaster.unsubscribe(sub_id)
             raise

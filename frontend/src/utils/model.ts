@@ -15,5 +15,5 @@ export function isClaudePath(modelPath: string | undefined): boolean {
 }
 
 export function isPremiumPath(modelPath: string | undefined): boolean {
-  return isClaudePath(modelPath) || modelPath === GPT_55_MODEL_PATH;
+  return modelPath === CLAUDE_MODEL_PATH || modelPath === GPT_55_MODEL_PATH;
 }
