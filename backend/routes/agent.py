@@ -57,6 +57,12 @@ AVAILABLE_MODELS = [
         "recommended": True,
     },
     {
+        "id": "tokenrouter/auto:balance",
+        "label": "TokenRouter Auto Balance",
+        "provider": "tokenrouter",
+        "tier": "external",
+    },
+    {
         "id": "MiniMaxAI/MiniMax-M2.7",
         "label": "MiniMax M2.7",
         "provider": "huggingface",
@@ -72,16 +78,18 @@ AVAILABLE_MODELS = [
 
 
 def _is_anthropic_model(model_id: str) -> bool:
-    return "anthropic" in model_id
+    return model_id.startswith("anthropic/") or (
+        model_id.startswith("bedrock/") and "anthropic" in model_id
+    )
 
 
 async def _require_hf_for_anthropic(request: Request, model_id: str) -> None:
     """403 if a non-``huggingface``-org user tries to select an Anthropic model.
 
-    Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; every
-    other model in ``AVAILABLE_MODELS`` is routed through HF Router and
-    billed via ``X-HF-Bill-To``. The gate only fires for Anthropic so
-    non-HF users can still freely switch between the free models.
+    Anthropic models are billed to the Space's ``ANTHROPIC_API_KEY``; HF Router
+    models are billed via ``X-HF-Bill-To`` and TokenRouter models use the
+    server's ``TOKENROUTER_API_KEY``. The gate only fires for direct Anthropic
+    models so non-HF users can still switch between the other models.
 
     Pattern: https://github.com/huggingface/ml-intern/pull/63
     """

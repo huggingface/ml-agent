@@ -5,12 +5,31 @@ can import it without pulling in the whole agent loop / tool router and
 creating circular imports.
 """
 
+import os
+
 from agent.core.hf_tokens import get_hf_bill_to, resolve_hf_router_token
 
 
 def _resolve_hf_router_token(session_hf_token: str | None = None) -> str | None:
     """Backward-compatible private wrapper used by tests and older imports."""
     return resolve_hf_router_token(session_hf_token)
+
+
+def _clean_env_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("\r", "").replace("\n", "").strip() or None
+
+
+def _resolve_tokenrouter_api_key() -> str | None:
+    return _clean_env_value(os.environ.get("TOKENROUTER_API_KEY"))
+
+
+def _resolve_tokenrouter_api_base() -> str:
+    return (
+        _clean_env_value(os.environ.get("TOKENROUTER_API_BASE"))
+        or "https://api.tokenrouter.io/v1"
+    ).rstrip("/")
 
 
 def _patch_litellm_effort_validation() -> None:
@@ -72,6 +91,7 @@ _patch_litellm_effort_validation()
 # Effort levels accepted on the wire.
 #   Anthropic (4.6+):  low | medium | high | xhigh | max   (output_config.effort)
 #   OpenAI direct:     minimal | low | medium | high | xhigh (reasoning_effort top-level)
+#   TokenRouter:       no effort parameter documented on OpenAI-compatible chat
 #   HF router:         low | medium | high                 (extra_body.reasoning_effort)
 #
 # We validate *shape* here and let the probe cascade walk down on rejection;
@@ -113,6 +133,15 @@ def _resolve_llm_params(
 
     • ``openai/<model>`` — ``reasoning_effort`` forwarded as a top-level
       kwarg (GPT-5 / o-series). LiteLLM uses the user's ``OPENAI_API_KEY``.
+
+    • ``tokenrouter/<model>`` — TokenRouter's OpenAI-compatible endpoint at
+      ``https://api.tokenrouter.io/v1``. The prefix is stripped and the
+      remainder is sent through LiteLLM's OpenAI adapter, so ids like
+      ``tokenrouter/auto:balance`` and ``tokenrouter/openai:gpt-4o`` work.
+      Set ``TOKENROUTER_API_KEY`` for authentication and optionally
+      ``TOKENROUTER_API_BASE`` for a custom compatible endpoint. TokenRouter's
+      chat-completions compatibility docs do not list ``reasoning_effort``, so
+      we omit it instead of forwarding a provider-specific parameter.
 
     • Anything else is treated as a HuggingFace router id. We hit the
       auto-routing OpenAI-compatible endpoint at
@@ -179,6 +208,18 @@ def _resolve_llm_params(
             else:
                 params["reasoning_effort"] = reasoning_effort
         return params
+
+    if model_name.startswith("tokenrouter/"):
+        if reasoning_effort and strict:
+            raise UnsupportedEffortError(
+                f"TokenRouter doesn't accept effort={reasoning_effort!r}"
+            )
+        tokenrouter_model = model_name.removeprefix("tokenrouter/")
+        return {
+            "model": f"openai/{tokenrouter_model}",
+            "api_base": _resolve_tokenrouter_api_base(),
+            "api_key": _resolve_tokenrouter_api_key(),
+        }
 
     hf_model = model_name.removeprefix("huggingface/")
     api_key = _resolve_hf_router_token(session_hf_token)

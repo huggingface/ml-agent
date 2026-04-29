@@ -30,6 +30,43 @@ def test_openai_max_effort_is_still_rejected():
         raise AssertionError("Expected UnsupportedEffortError for max effort")
 
 
+def test_tokenrouter_params_use_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setenv("TOKENROUTER_API_KEY", " tokenrouter-key ")
+    monkeypatch.delenv("TOKENROUTER_API_BASE", raising=False)
+
+    params = _resolve_llm_params("tokenrouter/auto:balance")
+
+    assert params == {
+        "model": "openai/auto:balance",
+        "api_base": "https://api.tokenrouter.io/v1",
+        "api_key": "tokenrouter-key",
+    }
+
+
+def test_tokenrouter_api_base_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("TOKENROUTER_API_KEY", "tokenrouter-key")
+    monkeypatch.setenv("TOKENROUTER_API_BASE", " https://proxy.example.test/v1/ ")
+
+    params = _resolve_llm_params("tokenrouter/openai:gpt-4o")
+
+    assert params["model"] == "openai/openai:gpt-4o"
+    assert params["api_base"] == "https://proxy.example.test/v1"
+    assert params["api_key"] == "tokenrouter-key"
+
+
+def test_tokenrouter_effort_is_rejected_in_strict_probe_mode():
+    try:
+        _resolve_llm_params(
+            "tokenrouter/auto:balance",
+            reasoning_effort="high",
+            strict=True,
+        )
+    except UnsupportedEffortError as exc:
+        assert "TokenRouter doesn't accept effort='high'" in str(exc)
+    else:
+        raise AssertionError("Expected UnsupportedEffortError for TokenRouter effort")
+
+
 def test_hf_router_token_prefers_inference_token(monkeypatch):
     monkeypatch.setenv("INFERENCE_TOKEN", " inference-token ")
     monkeypatch.setenv("HF_TOKEN", "hf-token")
