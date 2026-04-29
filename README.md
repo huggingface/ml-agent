@@ -28,6 +28,7 @@ Create a `.env` file in the project root (or export these in your shell):
 ```bash
 ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
 OPENAI_API_KEY=<your-openai-api-key> # if using openai models
+TOKENROUTER_API_KEY=<your-tokenrouter-api-key> # if using tokenrouter models
 HF_TOKEN=<your-hugging-face-token>
 GITHUB_TOKEN=<github-personal-access-token> 
 ```
@@ -52,9 +53,16 @@ ml-intern "fine-tune llama on my dataset"
 ```bash
 ml-intern --model anthropic/claude-opus-4-6 "your prompt"
 ml-intern --model openai/gpt-5.5 "your prompt"
+ml-intern --model tokenrouter/auto:balance "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+OpenAI-compatible TokenRouter models use the `tokenrouter/` prefix. ML Intern
+sends the suffix as the TokenRouter model id, so examples include
+`tokenrouter/auto:balance`, `tokenrouter/auto:fast`, and
+`tokenrouter/openai:gpt-4o`. Set `TOKENROUTER_API_BASE` only if you need to
+override the default `https://api.tokenrouter.io/v1` endpoint.
 
 ## Supported Gateways
 

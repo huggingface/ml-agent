@@ -43,6 +43,13 @@ const MODEL_OPTIONS: ModelOption[] = [
     recommended: true,
   },
   {
+    id: 'tokenrouter-auto-balance',
+    name: 'TokenRouter Auto',
+    description: 'TokenRouter',
+    modelPath: 'tokenrouter/auto:balance',
+    avatarUrl: 'https://www.google.com/s2/favicons?domain=tokenrouter.io&sz=64',
+  },
+  {
     id: 'minimax-m2.7',
     name: 'MiniMax M2.7',
     description: 'Novita',
