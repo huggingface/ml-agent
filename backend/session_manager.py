@@ -612,6 +612,8 @@ class SessionManager:
                 max_tokens=4000,
                 prompt=_RESTORE_PROMPT,
                 tool_specs=tool_specs,
+                session=session,
+                kind="restore",
             )
         except Exception as e:
             logger.error("Summary call failed during seed: %s", e)
