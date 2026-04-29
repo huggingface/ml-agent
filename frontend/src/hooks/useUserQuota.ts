@@ -1,5 +1,5 @@
 /**
- * Reads the current user's Claude daily quota + plan tier from the backend.
+ * Reads the current user's premium-model daily quota + plan tier from the backend.
  *
  * Fetches once when the user becomes authenticated, and exposes a `refresh()`
  * that callers invoke after a successful session-create / model-switch so the
@@ -32,9 +32,9 @@ export function useUserQuota() {
       const data = await res.json();
       setQuota({
         plan: (data.plan ?? 'free') as PlanTier,
-        claudeUsedToday: data.claude_used_today ?? 0,
-        claudeDailyCap: data.claude_daily_cap ?? 1,
-        claudeRemaining: data.claude_remaining ?? 0,
+        claudeUsedToday: data.premium_used_today ?? data.claude_used_today ?? 0,
+        claudeDailyCap: data.premium_daily_cap ?? data.claude_daily_cap ?? 1,
+        claudeRemaining: data.premium_remaining ?? data.claude_remaining ?? 0,
       });
     } catch {
       /* backend unreachable — leave previous value */

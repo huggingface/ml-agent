@@ -8,7 +8,13 @@ import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
-import { CLAUDE_MODEL_PATH, FIRST_FREE_MODEL_PATH, isClaudePath } from '@/utils/model';
+import {
+  CLAUDE_MODEL_PATH,
+  FIRST_FREE_MODEL_PATH,
+  GPT_55_MODEL_PATH,
+  isClaudePath,
+  isPremiumPath,
+} from '@/utils/model';
 
 // Model configuration
 interface ModelOption {
@@ -46,7 +52,7 @@ const DEFAULT_MODEL_OPTIONS: ModelOption[] = [
     id: 'gpt-5.5',
     name: 'GPT-5.5',
     description: 'OpenAI',
-    modelPath: 'openai/gpt-5.5',
+    modelPath: GPT_55_MODEL_PATH,
     avatarUrl: 'https://huggingface.co/api/avatars/openai',
   },
   {
@@ -79,7 +85,8 @@ interface ChatInputProps {
 }
 
 const isClaudeModel = (m: ModelOption) => isClaudePath(m.modelPath);
-const firstFreeModel = (options: ModelOption[]) => options.find(m => !isClaudeModel(m)) ?? options[0];
+const isPremiumModel = (m: ModelOption) => isPremiumPath(m.modelPath);
+const firstFreeModel = (options: ModelOption[]) => options.find(m => !isPremiumModel(m)) ?? options[0];
 
 export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
@@ -89,7 +96,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
   const { quota, refresh: refreshQuota } = useUserQuota();
   // The daily-cap dialog is triggered from two places: (a) a 429 returned
-  // from the chat transport when the user tries to send on Opus over cap —
+  // from the chat transport when the user tries to send on a premium model over cap —
   // surfaced via the agent-store flag — and (b) nothing else right now
   // (switching models is free). Keeping the open state in the store means
   // the hook layer can flip it without threading props through.
@@ -159,7 +166,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     }
   }, [input, disabled, onSend]);
 
-  // When the chat transport reports a Claude-quota 429, restore the typed
+  // When the chat transport reports a premium-model quota 429, restore the typed
   // text so the user doesn't lose their message.
   useEffect(() => {
     if (claudeQuotaExhausted && lastSentRef.current) {
@@ -210,7 +217,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   }, [setClaudeQuotaExhausted]);
 
   // "Use a free model" — switch the current session to Kimi (or the first
-  // non-Anthropic option) and auto-retry the send that tripped the cap.
+  // non-premium option) and auto-retry the send that tripped the cap.
   const handleUseFreeModel = useCallback(async () => {
     setClaudeQuotaExhausted(false);
     if (!sessionId) return;
@@ -233,12 +240,12 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     } catch { /* ignore */ }
   }, [sessionId, onSend, setClaudeQuotaExhausted, modelOptions]);
 
-  const handleClaudeUpgradeClick = useCallback(async () => {
+  const handlePremiumUpgradeClick = useCallback(async () => {
     if (!sessionId) return;
     try {
       await apiFetch(`/api/pro-click/${sessionId}`, {
         method: 'POST',
-        body: JSON.stringify({ source: 'claude_cap_dialog', target: 'pro_pricing' }),
+        body: JSON.stringify({ source: 'premium_cap_dialog', target: 'pro_pricing' }),
       });
     } catch {
       /* tracking is best-effort */
@@ -286,9 +293,9 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [awaitingTopUp, jobsUpgradeRequired, handleJobsRetry]);
 
-  // Hide the chip until the user has actually burned quota — an unused
-  // Opus session shouldn't populate a counter.
-  const claudeChip = (() => {
+  // Hide the chip until the user has actually burned quota; opening a
+  // premium-model session without sending should not populate a counter.
+  const premiumChip = (() => {
     if (!quota || quota.claudeUsedToday === 0) return null;
     if (quota.plan === 'free') {
       return quota.claudeRemaining > 0 ? 'Free today' : 'Pro only';
@@ -494,9 +501,9 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
                         }}
                       />
                     )}
-                    {isClaudeModel(model) && claudeChip && (
+                    {isPremiumModel(model) && premiumChip && (
                       <Chip
-                        label={claudeChip}
+                        label={premiumChip}
                         size="small"
                         sx={{
                           height: '18px',
@@ -524,7 +531,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           cap={quota?.claudeDailyCap ?? 1}
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
-          onUpgrade={handleClaudeUpgradeClick}
+          onUpgrade={handlePremiumUpgradeClick}
         />
         <JobsUpgradeDialog
           open={!!jobsUpgradeRequired}
