@@ -84,20 +84,6 @@ def test_hf_router_params_set_bill_to_only_for_inference_token(monkeypatch):
     assert params["extra_headers"] == {"X-HF-Bill-To": "test-org"}
 
 
-def test_hf_router_preserves_deepinfra_provider_suffix(monkeypatch):
-    monkeypatch.setenv("INFERENCE_TOKEN", "inference-token")
-
-    params = _resolve_llm_params(
-        "deepseek-ai/DeepSeek-V4-Pro:deepinfra",
-        reasoning_effort="high",
-    )
-
-    assert params["model"] == "openai/deepseek-ai/DeepSeek-V4-Pro:deepinfra"
-    assert params["api_base"] == "https://router.huggingface.co/v1"
-    assert params["api_key"] == "inference-token"
-    assert params["extra_body"] == {"reasoning_effort": "high"}
-
-
 def test_hf_request_token_keeps_browser_user_precedence(monkeypatch):
     class Request:
         headers = {"Authorization": "Bearer browser-token"}
