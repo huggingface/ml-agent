@@ -165,25 +165,12 @@ def _bearer_token(header: str) -> str:
 
 def _require_auth(request: Request) -> None:
     sandbox_token = os.environ.get("SANDBOX_API_TOKEN") or ""
-    if sandbox_token:
-        supplied = (
-            _bearer_token(request.headers.get("x-sandbox-authorization", ""))
-            or request.headers.get("x-sandbox-api-token", "")
-            or _bearer_token(request.headers.get("authorization", ""))
-        )
-        if not supplied:
-            raise HTTPException(status_code=401, detail="Missing bearer token")
-        if not hmac.compare_digest(supplied, sandbox_token):
-            raise HTTPException(status_code=401, detail="Invalid bearer token")
-        return
-
-    expected = os.environ.get("HF_TOKEN") or ""
-    if not expected:
+    if not sandbox_token:
         raise HTTPException(status_code=503, detail="Sandbox API token not configured")
-    supplied = _bearer_token(request.headers.get("authorization", ""))
+    supplied = _bearer_token(request.headers.get("x-sandbox-authorization", ""))
     if not supplied:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    if not hmac.compare_digest(supplied, expected):
+    if not hmac.compare_digest(supplied, sandbox_token):
         raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 _AUTH = [Depends(_require_auth)]
@@ -536,23 +523,18 @@ class Sandbox:
         )
         self._hf_api = HfApi(token=self.token)
 
-    def _auth_headers(self, *, prefer_hub_auth: bool = True) -> dict[str, str]:
+    def _auth_headers(self) -> dict[str, str]:
         """Return headers for private HF Space access plus sandbox API auth.
 
         Private Spaces require the HF token in ``Authorization`` at the Hub
-        edge. The sandbox server therefore accepts its control-plane token via
-        ``X-Sandbox-Authorization`` while retaining the legacy Authorization
-        fallback for already-running public sandboxes.
+        edge. The sandbox server requires its control-plane token in the
+        dedicated ``X-Sandbox-Authorization`` header.
         """
         headers: dict[str, str] = {}
-        if prefer_hub_auth and self.token:
+        if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-            if self.api_token:
-                headers["X-Sandbox-Authorization"] = f"Bearer {self.api_token}"
-        elif self.api_token:
-            headers["Authorization"] = f"Bearer {self.api_token}"
-        elif self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        if self.api_token:
+            headers["X-Sandbox-Authorization"] = f"Bearer {self.api_token}"
         return headers
 
     # ── Lifecycle ─────────────────────────────────────────────────
@@ -813,16 +795,6 @@ class Sandbox:
                     json=payload,
                     timeout=effective_timeout,
                 )
-                if resp.status_code == 401 and self.api_token and self.token:
-                    # Compatibility with sandboxes created before the server
-                    # accepted X-Sandbox-Authorization. Those public Spaces
-                    # expect the sandbox token in Authorization.
-                    resp = self._client.post(
-                        endpoint,
-                        json=payload,
-                        timeout=effective_timeout,
-                        headers=self._auth_headers(prefer_hub_auth=False),
-                    )
                 try:
                     data = resp.json()
                 except (ValueError, UnicodeDecodeError):
