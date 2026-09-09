@@ -11,6 +11,8 @@
 
 An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
 
+**👉 Try the new [ML Intern mode in Hugging Chat](https://hf.co/chat).**
+
 ## Quick Start
 
 ### Installation
